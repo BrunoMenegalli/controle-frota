@@ -1,0 +1,31 @@
+name: Decodificar imagens
+on:
+  push:
+    branches: [main]
+    paths: ['assets-b64/**']
+  workflow_dispatch:
+permissions:
+  contents: write
+concurrency:
+  group: decode
+  cancel-in-progress: false
+jobs:
+  decode:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Decodificar base64 -> binário
+        run: |
+          find assets-b64 -name '*.b64' | while read f; do
+            out="${f#assets-b64/}"; out="${out%.b64}"
+            mkdir -p "$(dirname "$out")"; base64 -d "$f" > "$out"; echo "$out"
+          done
+          touch .nojekyll
+      - name: Commit
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898231+github-actions[bot]@users.noreply.github.com"
+          git add -A img icons .nojekyll
+          git diff --cached --quiet || git commit -m "Imagens decodificadas [skip ci]"
+          git pull --rebase origin main || true
+          git push origin HEAD:main
