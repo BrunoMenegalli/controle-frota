@@ -1,6 +1,6 @@
-const CACHE='bm-sistemas-v4';
+const CACHE='bm-sistemas-v5';
 const ASSETS=['./','index.html','app.css','app.js','manifest.webmanifest','icons/icon-192.png','icons/icon-512.png','icons/icon-maskable-192.png','icons/icon-maskable-512.png','icons/apple-touch-icon.png','icons/favicon-32.png','icons/favicon-16.png','icons/src/bm-icon.svg',
- 'img/volvo-l90.jpg','img/case-w20e-bm.jpg','img/saveiro.jpg','img/hilux-std-bm.jpg','img/f250-xl.jpg','img/jcb-426.jpg','img/axor-2644.jpg'];
+ 'img/volvo-l90.jpg','img/case-w20e-bm.jpg','img/saveiro-bm.jpg','img/hilux-std-bm.jpg','img/f250-xl.jpg','img/jcb-426.jpg','img/axor-2644.jpg'];
 self.addEventListener('install',e=>{ e.waitUntil(caches.open(CACHE).then(c=>c.addAll(ASSETS)).then(()=>self.skipWaiting())); });
 self.addEventListener('activate',e=>{ e.waitUntil(caches.keys().then(ks=>Promise.all(ks.filter(k=>k!==CACHE).map(k=>caches.delete(k)))).then(()=>self.clients.claim())); });
 self.addEventListener('fetch',e=>{
