@@ -1,15 +1,15 @@
 'use strict';
 /* BM Sistemas — Controle de Frota — PWA offline. Dados ficam no aparelho (IndexedDB). */
-const APP_VERSION = '1.1.0';
+const APP_VERSION = '1.2.0';
 const MAX_PX = 1280, JPEG_Q = 0.8;
 
 const DEFAULT_MACHINES = [
   {id:'volvo-l90', nome:'Volvo L90', tipo:'Pá carregadeira', medidor:'h', foto:'img/volvo-l90.jpg',
    descricao:'Pá carregadeira de rodas Volvo L90. Controle por horímetro.',
    credito:{autor:'Alf van Beem', licenca:'CC0 (domínio público)', url:'https://commons.wikimedia.org/wiki/File:Volvo_L90F_p1.JPG', obs:'Foto de uma Volvo L90F.'}},
-  {id:'case-w20e', nome:'W20E', tipo:'Pá carregadeira', medidor:'h', foto:'img/case-w20c.jpg',
+  {id:'case-w20e', nome:'W20E', tipo:'Pá carregadeira', medidor:'h', foto:'img/case-w20e-bm.jpg',
    descricao:'Pá carregadeira articulada Case W20E. Controle por horímetro.',
-   credito:{autor:'BuckSkinRider', licenca:'CC BY-SA 4.0', url:'https://commons.wikimedia.org/wiki/File:2025-03-18_134123_S90_0002_I_w248.jpg', obs:'Foto de uma Case W20C (mesmo modelo e porte, versão anterior à W20E).'}},
+   credito:null},
   {id:'saveiro', nome:'Saveiro quadrada', tipo:'Picape • Verde', medidor:'km', foto:'img/saveiro.jpg',
    descricao:'VW Saveiro quadrada (1ª geração), cor verde. Controle por hodômetro.',
    credito:{autor:'order_242 (Flickr)', licenca:'CC BY-SA 2.0', url:'https://commons.wikimedia.org/wiki/File:Volkswagen_Saveiro_1.6_1987_(16108616693).jpg', obs:'Saveiro 1.6 1987. Cor alterada digitalmente de vermelho para verde.'}},
@@ -355,7 +355,7 @@ function creditos(){
   abrir('Sobre', `<div class="block"><b>BM Sistemas — Controle de Frota</b> v${APP_VERSION}<br>Registro de revisões com fotos, horímetro/hodômetro, mecânico, custo e peças trocadas. Funciona offline.</div>
     <div class="block"><small>Onde ficam os dados</small>Tudo é salvo no próprio aparelho (no navegador). Se limpar os dados do navegador ou trocar de celular, os registros não vão junto — faça <b>Exportar backup</b> e depois <b>Importar backup</b> no outro aparelho.</div>
     <h3 class="sec">Créditos das fotos (Wikimedia Commons)</h3>
-    <ul class="credits">${DEFAULT_MACHINES.map(m=>`<li><b>${esc(m.nome)}</b>: ${esc(m.credito.autor)} — ${esc(m.credito.licenca)}. ${esc(m.credito.obs)} <a href="${esc(m.credito.url)}" target="_blank" rel="noopener">Ver original</a></li>`).join('')}</ul>
+    <ul class="credits">${DEFAULT_MACHINES.filter(m=>m.credito).map(m=>`<li><b>${esc(m.nome)}</b>: ${esc(m.credito.autor)} — ${esc(m.credito.licenca)}. ${esc(m.credito.obs)} <a href="${esc(m.credito.url)}" target="_blank" rel="noopener">Ver original</a></li>`).join('')}<li><b>W20E</b>: foto própria (BM Sistemas).</li></ul>
     <p class="note">Fotos redimensionadas. Licenças CC BY / CC BY-SA exigem atribuição; a foto da Saveiro teve a cor alterada.</p>`);
 }
 
