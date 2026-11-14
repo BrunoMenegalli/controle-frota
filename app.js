@@ -1,15 +1,15 @@
 'use strict';
-/* Controle de Frota — PWA offline. Dados ficam no aparelho (IndexedDB). */
-const APP_VERSION = '1.0.0';
+/* BM Sistemas — Controle de Frota — PWA offline. Dados ficam no aparelho (IndexedDB). */
+const APP_VERSION = '1.1.0';
 const MAX_PX = 1280, JPEG_Q = 0.8;
 
 const DEFAULT_MACHINES = [
   {id:'volvo-l90', nome:'Volvo L90', tipo:'Pá carregadeira', medidor:'h', foto:'img/volvo-l90.jpg',
    descricao:'Pá carregadeira de rodas Volvo L90. Controle por horímetro.',
    credito:{autor:'Alf van Beem', licenca:'CC0 (domínio público)', url:'https://commons.wikimedia.org/wiki/File:Volvo_L90F_p1.JPG', obs:'Foto de uma Volvo L90F.'}},
-  {id:'case-w20e', nome:'W20E', tipo:'Pá carregadeira', medidor:'h', foto:'img/case-w20e.jpg',
-   descricao:'Pá carregadeira Case W20E. Controle por horímetro.',
-   credito:{autor:'Almanaque Lusofonista', licenca:'CC BY 3.0 BR', url:'https://commons.wikimedia.org/wiki/File:Trator_PAC2_Brasil.JPG', obs:'Foto ilustrativa de uma pá carregadeira Case (não é W20E). Troque pela foto da sua máquina no ✎.'}},
+  {id:'case-w20e', nome:'W20E', tipo:'Pá carregadeira', medidor:'h', foto:'img/case-w20c.jpg',
+   descricao:'Pá carregadeira articulada Case W20E. Controle por horímetro.',
+   credito:{autor:'BuckSkinRider', licenca:'CC BY-SA 4.0', url:'https://commons.wikimedia.org/wiki/File:2025-03-18_134123_S90_0002_I_w248.jpg', obs:'Foto de uma Case W20C (mesmo modelo e porte, versão anterior à W20E).'}},
   {id:'saveiro', nome:'Saveiro quadrada', tipo:'Picape • Verde', medidor:'km', foto:'img/saveiro.jpg',
    descricao:'VW Saveiro quadrada (1ª geração), cor verde. Controle por hodômetro.',
    credito:{autor:'order_242 (Flickr)', licenca:'CC BY-SA 2.0', url:'https://commons.wikimedia.org/wiki/File:Volkswagen_Saveiro_1.6_1987_(16108616693).jpg', obs:'Saveiro 1.6 1987. Cor alterada digitalmente de vermelho para verde.'}},
@@ -99,6 +99,16 @@ async function seed(){
   if(m) return;
   let i=0; for(const x of DEFAULT_MACHINES){ await put('maquinas',{...x, padrao:true, ordem:i++}); }
   await put('meta',{k:'seeded',v:true});
+}
+// Atualiza foto/créditos das máquinas padrão (sem mexer em fotos trocadas pelo usuário)
+async function migrar(){
+  for(const d of DEFAULT_MACHINES){
+    const m=await getOne('maquinas',d.id);
+    if(m && m.padrao && typeof m.foto==='string' && m.foto.startsWith('img/') && (m.foto!==d.foto || JSON.stringify(m.credito)!==JSON.stringify(d.credito))){
+      const desc = (d.id==='case-w20e' && m.descricao==='Pá carregadeira Case W20E. Controle por horímetro.') ? d.descricao : m.descricao;
+      await put('maquinas',{...m, foto:d.foto, credito:d.credito, descricao:desc});
+    }
+  }
 }
 async function loadMaquinas(){ maquinas = (await getAll('maquinas')).sort((a,b)=>(a.ordem??0)-(b.ordem??0)); }
 
@@ -316,10 +326,10 @@ async function exportar(){
   const data={app:'controle-frota', versao:1, exportadoEm:new Date().toISOString(),
     maquinas: await Promise.all(maqs.map(async m=>({...m, foto:await enc(m.foto)}))),
     revisoes: await Promise.all(revs.map(async r=>({...r, fotoMedidor:await enc(r.fotoMedidor), fotosMaquina:await Promise.all((r.fotosMaquina||[]).map(enc))})))};
-  const name=`frota-backup-${hoje()}.json`;
+  const name=`bm-sistemas-frota-${hoje()}.json`;
   const blob=new Blob([JSON.stringify(data)],{type:'application/json'});
   const file=new File([blob],name,{type:'application/json'});
-  try{ if(navigator.canShare && navigator.canShare({files:[file]}) && confirm('Compartilhar o backup (WhatsApp, Drive, e-mail…)?\n\nCancelar = apenas baixar o arquivo.')){ await navigator.share({files:[file], title:'Backup Controle de Frota'}); return; } }catch(e){ if(e.name==='AbortError') return; }
+  try{ if(navigator.canShare && navigator.canShare({files:[file]}) && confirm('Compartilhar o backup (WhatsApp, Drive, e-mail…)?\n\nCancelar = apenas baixar o arquivo.')){ await navigator.share({files:[file], title:'Backup BM Sistemas'}); return; } }catch(e){ if(e.name==='AbortError') return; }
   const a=document.createElement('a'); a.href=URL.createObjectURL(blob); a.download=name; document.body.appendChild(a); a.click(); a.remove();
   setTimeout(()=>URL.revokeObjectURL(a.href),10000); toast('Backup baixado: '+name,4000);
 }
@@ -342,7 +352,7 @@ async function instalar(){
     <p class="note">Depois de instalado, o app abre como um aplicativo e funciona mesmo sem internet.</p>`);
 }
 function creditos(){
-  abrir('Sobre', `<div class="block"><b>Controle de Frota</b> v${APP_VERSION}<br>Registro de revisões com fotos, horímetro/hodômetro, mecânico, custo e peças trocadas. Funciona offline.</div>
+  abrir('Sobre', `<div class="block"><b>BM Sistemas — Controle de Frota</b> v${APP_VERSION}<br>Registro de revisões com fotos, horímetro/hodômetro, mecânico, custo e peças trocadas. Funciona offline.</div>
     <div class="block"><small>Onde ficam os dados</small>Tudo é salvo no próprio aparelho (no navegador). Se limpar os dados do navegador ou trocar de celular, os registros não vão junto — faça <b>Exportar backup</b> e depois <b>Importar backup</b> no outro aparelho.</div>
     <h3 class="sec">Créditos das fotos (Wikimedia Commons)</h3>
     <ul class="credits">${DEFAULT_MACHINES.map(m=>`<li><b>${esc(m.nome)}</b>: ${esc(m.credito.autor)} — ${esc(m.credito.licenca)}. ${esc(m.credito.obs)} <a href="${esc(m.credito.url)}" target="_blank" rel="noopener">Ver original</a></li>`).join('')}</ul>
@@ -352,7 +362,7 @@ function creditos(){
 /* ---------- init ---------- */
 $('#btnMenu').onclick=menu;
 (async()=>{
-  try{ await seed(); await loadMaquinas(); }catch(e){ $('#main').innerHTML=`<div class="wrap"><div class="empty">Não foi possível abrir o banco de dados do navegador.<br>${esc(e)}</div></div>`; return; }
+  try{ await seed(); await migrar(); await loadMaquinas(); }catch(e){ $('#main').innerHTML=`<div class="wrap"><div class="empty">Não foi possível abrir o banco de dados do navegador.<br>${esc(e)}</div></div>`; return; }
   const saved=localStorage.getItem('frota.atual');
   atual = maquinas.some(m=>m.id===saved) ? saved : maquinas[0]?.id;
   renderTabs(); renderMain();
