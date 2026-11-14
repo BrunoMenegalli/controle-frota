@@ -1,6 +1,6 @@
 'use strict';
 /* BM Sistemas — Controle de Frota — PWA offline. Dados ficam no aparelho (IndexedDB). */
-const APP_VERSION = '1.6.0';
+const APP_VERSION = '1.7.0';
 const MAX_PX = 1280, JPEG_Q = 0.8;
 
 const DEFAULT_MACHINES = [
@@ -19,9 +19,9 @@ const DEFAULT_MACHINES = [
   {id:'f250', nome:'F-250 XL 2010', tipo:'Picape • Branca • 4x4', medidor:'km', foto:'img/f250-bm.jpg',
    descricao:'Ford F-250 XL ano 2010, branca, 4x4. Controle por hodômetro.',
    credito:null},
-  {id:'jcb-426ex', nome:'JCB 426EX', tipo:'Pá carregadeira', medidor:'h', foto:'img/jcb-426.jpg',
+  {id:'jcb-426ex', nome:'JCB 426EX', tipo:'Pá carregadeira', medidor:'h', foto:'img/jcb-426ex-bm.jpg',
    descricao:'Pá carregadeira JCB 426EX. Controle por horímetro.',
-   credito:{autor:'Oto Zapletal', licenca:'CC BY 4.0', url:'https://commons.wikimedia.org/wiki/File:JCB_426_ZX_wheel_loader.jpg', obs:'Foto de uma JCB 426 ZX (mesma família 426).'}},
+   credito:null},
   {id:'axor-2644', nome:'Axor 2644', tipo:'Cavalo mecânico', medidor:'km', foto:'img/axor-2644-bm.jpg',
    descricao:'Caminhão trator (cavalo mecânico) Mercedes-Benz Axor 2644. Controle por hodômetro.',
    credito:null},
@@ -355,7 +355,7 @@ function creditos(){
   abrir('Sobre', `<div class="block"><b>BM Sistemas — Controle de Frota</b> v${APP_VERSION}<br>Registro de revisões com fotos, horímetro/hodômetro, mecânico, custo e peças trocadas. Funciona offline.</div>
     <div class="block"><small>Onde ficam os dados</small>Tudo é salvo no próprio aparelho (no navegador). Se limpar os dados do navegador ou trocar de celular, os registros não vão junto — faça <b>Exportar backup</b> e depois <b>Importar backup</b> no outro aparelho.</div>
     <h3 class="sec">Créditos das fotos (Wikimedia Commons)</h3>
-    <ul class="credits">${DEFAULT_MACHINES.filter(m=>m.credito).map(m=>`<li><b>${esc(m.nome)}</b>: ${esc(m.credito.autor)} — ${esc(m.credito.licenca)}. ${esc(m.credito.obs)} <a href="${esc(m.credito.url)}" target="_blank" rel="noopener">Ver original</a></li>`).join('')}<li><b>W20E</b>, <b>Saveiro quadrada</b>, <b>Hilux STD</b>, <b>F-250 XL 2010</b> e <b>Axor 2644</b>: foto própria (BM Sistemas).</li></ul>
+    <ul class="credits">${DEFAULT_MACHINES.filter(m=>m.credito).map(m=>`<li><b>${esc(m.nome)}</b>: ${esc(m.credito.autor)} — ${esc(m.credito.licenca)}. ${esc(m.credito.obs)} <a href="${esc(m.credito.url)}" target="_blank" rel="noopener">Ver original</a></li>`).join('')}<li><b>W20E</b>, <b>Saveiro quadrada</b>, <b>Hilux STD</b>, <b>F-250 XL 2010</b>, <b>JCB 426EX</b> e <b>Axor 2644</b>: foto própria (BM Sistemas).</li></ul>
     <p class="note">Fotos redimensionadas. Licenças CC BY / CC BY-SA exigem atribuição.</p>`);
 }
 
