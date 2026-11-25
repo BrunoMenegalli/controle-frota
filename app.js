@@ -1,6 +1,6 @@
 'use strict';
 /* BM Sistemas — Controle de Frota — PWA offline. Dados ficam no aparelho (IndexedDB). */
-const APP_VERSION = '2.0.0';
+const APP_VERSION = '2.1.0';
 const MAX_PX = 1280, JPEG_Q = 0.8;
 
 /* Categorias: definem campos (série x chassi/placa), itens de vencimento e checklist da OS */
@@ -89,12 +89,14 @@ CHECKLISTS.outro = [...CK_LINHA_AMARELA,...CK_SEG_MAQ];
 let dbp;
 function db(){
   if(!dbp) dbp = new Promise((res,rej)=>{
-    const r = indexedDB.open('controle-frota',1);
+    const r = indexedDB.open('controle-frota',2);
     r.onupgradeneeded = ()=>{
       const d = r.result;
       if(!d.objectStoreNames.contains('maquinas')) d.createObjectStore('maquinas',{keyPath:'id'});
       if(!d.objectStoreNames.contains('revisoes')){ const s=d.createObjectStore('revisoes',{keyPath:'id'}); s.createIndex('maquina','maquinaId'); }
       if(!d.objectStoreNames.contains('meta')) d.createObjectStore('meta',{keyPath:'k'});
+      if(!d.objectStoreNames.contains('media')) d.createObjectStore('media',{keyPath:'path'});
+      if(!d.objectStoreNames.contains('pending')) d.createObjectStore('pending',{keyPath:'key'});
     };
     r.onsuccess = ()=>res(r.result); r.onerror = ()=>rej(r.error);
   });
@@ -131,7 +133,11 @@ const parseLeitura = (v)=> parseBR(v);
 const unidade = (m)=> m.medidor==='km' ? 'km' : 'h';
 const medidorNome = (m)=> m.medidor==='km' ? 'Hodômetro' : 'Horímetro';
 const urls = new Map();
-function blobUrl(b){ if(!b) return ''; if(typeof b==='string') return b; if(!urls.has(b)) urls.set(b, URL.createObjectURL(b)); return urls.get(b); }
+function blobUrl(b){ if(!b) return ''; if(typeof b==='string'){ if(b.startsWith('storage:') && window.Cloud) return Cloud.mediaUrl(b); return b; } if(!urls.has(b)) urls.set(b, URL.createObjectURL(b)); return urls.get(b); }
+function imgAttr(b){ return `src="${esc(blobUrl(b))}"${typeof b==='string'&&b.startsWith('storage:')?` data-media="${esc(b)}"`:''}`; }
+async function resolveBlob(b){ if(!b) return null; if(typeof b!=='string') return b; if(b.startsWith('storage:') && window.Cloud) return await Cloud.ensureMediaBlob(b); if(b.startsWith('data:')) return await dataURLToBlob(b); return b; }
+async function saveRecord(store, obj){ obj.atualizadoEm=Date.now(); await put(store,obj); if(window.Cloud) await Cloud.enqueue(store,obj.id,'put',obj.atualizadoEm); }
+async function deleteRecord(store, id){ await del(store,id); if(window.Cloud) await Cloud.enqueue(store,id,'del',Date.now()); }
 function toast(msg,ms=2500){ const t=$('#toast'); t.textContent=msg; t.hidden=false; clearTimeout(toast._t); toast._t=setTimeout(()=>t.hidden=true,ms); }
 
 async function compress(file){
@@ -158,7 +164,7 @@ let alertas = [], alertMap = {}, semData = 0;
 async function seed(){
   const m = await getOne('meta','seeded');
   if(m) return;
-  let i=0; for(const x of DEFAULT_MACHINES){ await put('maquinas',{...x, padrao:true, ordem:i++, docs:docsPadrao(x.categoria)}); }
+  let i=0; for(const x of DEFAULT_MACHINES){ await put('maquinas',{...x, padrao:true, ordem:i++, docs:docsPadrao(x.categoria), atualizadoEm:0}); }
   await put('meta',{k:'seeded',v:true});
   await put('meta',{k:'seededIds',v:DEFAULT_MACHINES.map(x=>x.id)});
 }
@@ -177,7 +183,7 @@ async function migrar(){
   let ordem = Math.max(-1,...todas.map(x=>x.ordem??0))+1;
   for(const d of DEFAULT_MACHINES){
     if(known.includes(d.id) || todas.some(x=>x.id===d.id)) continue;
-    await put('maquinas',{...d, padrao:true, ordem:ordem++, docs:docsPadrao(d.categoria)});
+    await put('maquinas',{...d, padrao:true, ordem:ordem++, docs:docsPadrao(d.categoria), atualizadoEm:0});
   }
   await put('meta',{k:'seededIds',v:[...new Set([...known,...DEFAULT_MACHINES.map(x=>x.id)])]});
   for(const m of await getAll('maquinas')){
@@ -264,7 +270,7 @@ function renderTabs(){
   const el=$('#tabs');
   el.innerHTML = `<button class="tab nav" data-id="__home" aria-selected="${atual==='__home'}">🏠 Início</button>`
     + `<button class="tab nav" data-id="__alertas" aria-selected="${atual==='__alertas'}">⚠️ Alertas${alertas.length?`<span class="bdg ${alertas.some(x=>x.s.st==='venc')?'venc':'prox'}">${alertas.length}</span>`:''}</button>`
-    + maquinas.map(m=>`<button class="tab" role="tab" data-id="${esc(m.id)}" aria-selected="${m.id===atual}"><img src="${esc(blobUrl(m.foto))}" alt="">${esc(m.nome)}${badgeHTML(m.id)}</button>`).join('')
+    + maquinas.map(m=>`<button class="tab" role="tab" data-id="${esc(m.id)}" aria-selected="${m.id===atual}"><img ${imgAttr(m.foto)} alt="">${esc(m.nome)}${badgeHTML(m.id)}</button>`).join('')
     + `<button class="tab add" id="tabAdd">＋ Novo</button>`;
   el.querySelectorAll('.tab[data-id]').forEach(b=>b.onclick=()=>selecionar(b.dataset.id));
   $('#tabAdd').onclick=()=>formMaquina();
@@ -288,7 +294,7 @@ function renderHome(){
   main.innerHTML=`<div class="wrap">
     <div class="home-head"><div><h2>Equipamentos</h2><small>${maquinas.length} cadastrados</small></div>
       <button class="sum ${nv?'venc':np?'prox':'ok'}" id="hAl">${alertas.length?`⚠️ ${nv} vencido${nv!==1?'s':''} · ${np} em breve`:'✔ Tudo em dia'}</button></div>
-    <div class="grid">${maquinas.map(m=>`<button class="card" data-id="${esc(m.id)}"><div class="cimg">${m.foto?`<img src="${esc(blobUrl(m.foto))}" alt="" loading="lazy">`:''}${badgeHTML(m.id,true)}</div>
+    <div class="grid">${maquinas.map(m=>`<button class="card" data-id="${esc(m.id)}"><div class="cimg">${m.foto?`<img ${imgAttr(m.foto)} alt="" loading="lazy">`:''}${badgeHTML(m.id,true)}</div>
       <div class="cb"><b>${esc(m.nome)}</b><small>${esc(m.tipo||CATS[m.categoria]?.nome||'')}</small></div></button>`).join('')}
       <button class="card add" id="hAdd"><b>＋</b><span>Novo equipamento</span></button></div>
   </div>`;
@@ -299,7 +305,7 @@ function renderHome(){
 function renderAlertas(){
   const main=$('#main');
   const venc=alertas.filter(x=>x.s.st==='venc'), prox=alertas.filter(x=>x.s.st==='prox');
-  const row=(x)=>`<button class="item al" data-id="${esc(x.m.id)}"><img class="th" src="${esc(blobUrl(x.m.foto))}" alt="">
+  const row=(x)=>`<button class="item al" data-id="${esc(x.m.id)}"><img class="th" ${imgAttr(x.m.foto)} alt="">
     <div class="meta"><b>${esc(x.d.nome)}</b><span>${esc(x.m.nome)}</span><span>${esc(x.s.det)}</span></div>${pill(x.s)}</button>`;
   const podeNotif = ('Notification' in window) && Notification.permission==='default';
   main.innerHTML=`<div class="wrap">
@@ -326,7 +332,7 @@ async function renderMaquina(m){
   const docs = (m.docs||[]).map(d=>({d, s:statusDoc(d,m,leit)}));
   const nOS = regs.filter(r=>r.tipo==='os').length;
   main.innerHTML = `
-    <section class="hero">${m.foto?`<img src="${esc(blobUrl(m.foto))}" alt="${esc(m.nome)}">`:''}
+    <section class="hero">${m.foto?`<img ${imgAttr(m.foto)} alt="${esc(m.nome)}">`:''}
       <button class="icon-btn edit" id="bEditM" aria-label="Editar equipamento">✎</button>
       ${m.credito&&m.credito.aprox?`<span class="aprox">📷 foto aproximada</span>`:''}
       <div class="ov"><span class="badge">${esc(m.tipo||CATS[m.categoria]?.nome||'Máquina')}</span><h1>${esc(m.nome)}</h1></div></section>
@@ -364,7 +370,7 @@ function itemRev(m,r){
   const nok = os ? (r.checklist||[]).filter(c=>c.st==='nok').length : 0;
   const linha2 = os ? `${esc(r.mecanico||'—')} · ${r.saida?'Concluída':'Em aberto'}${nok?` · ${nok} não OK`:''}` : esc(r.mecanico||'Sem mecânico');
   const linha3 = os ? esc(r.servicoSolicitado||(r.pecas||[]).map(p=>p.desc).filter(Boolean).join(', ')||'—') : esc((r.trocado||'').split('\n').filter(Boolean).join(', ')||'—');
-  return `<button class="item" data-id="${esc(r.id)}">${th?`<img class="th" src="${esc(blobUrl(th))}" alt="">`:`<div class="th ${os?'th-os':''}">${os?'OS':''}</div>`}
+  return `<button class="item" data-id="${esc(r.id)}">${th?`<img class="th" ${imgAttr(th)} alt="">`:`<div class="th ${os?'th-os':''}">${os?'OS':''}</div>`}
     <div class="meta"><b>${os?`<span class="tag-os">OS ${pad4(r.numero)}</span> `:''}${dataBR(r.data)} · ${r.leitura!=null?num(r.leitura)+' '+unidade(m):'—'}</b>
     <span>${linha2}</span><span>${linha3}</span></div>
     <div class="cost">${brl(r.custo)}</div></button>`;
@@ -384,7 +390,7 @@ $('#viewer').addEventListener('click',()=>{ $('#viewer').hidden=true; $('#viewer
 function photoPicker(container, {multi, initial=[], label}){
   let fotos=[...initial];
   const render=()=>{
-    container.innerHTML = fotos.map((b,i)=>`<div class="ph"><img src="${esc(blobUrl(b))}" alt=""><button type="button" data-rm="${i}" aria-label="Remover">✕</button></div>`).join('')
+    container.innerHTML = fotos.map((b,i)=>`<div class="ph"><img ${imgAttr(b)} alt=""><button type="button" data-rm="${i}" aria-label="Remover">✕</button></div>`).join('')
       + ((multi||!fotos.length)?`<label class="pick-btn"><b>📷</b>${esc(label)}<input type="file" accept="image/*" capture="environment" ${multi?'multiple':''}></label>`
         + `<label class="pick-btn"><b>🖼️</b>Galeria<input type="file" accept="image/*" ${multi?'multiple':''}></label>`:'');
     container.querySelectorAll('[data-rm]').forEach(b=>b.onclick=()=>{ fotos.splice(+b.dataset.rm,1); render(); });
@@ -425,7 +431,7 @@ function formRevisao(m, r){
     const obj = { ...r, id:r.id||uid(), maquinaId:m.id, data:f.data.value||hoje(), leitura:parseLeitura(f.leitura.value),
       fotoMedidor:pMed.get()[0]||null, fotosMaquina:pMaq.get(), mecanico:f.mecanico.value.trim(), custo:parseValor(f.custo.value),
       trocado:f.trocado.value.trim(), observacoes:f.obs.value.trim(), criadoEm:r.criadoEm||Date.now(), atualizadoEm:Date.now() };
-    try{ await put('revisoes',obj); }catch(err){ alert('Erro ao salvar: '+err); return; }
+    try{ await saveRecord('revisoes',obj); }catch(err){ alert('Erro ao salvar: '+err); return; }
     fechar(); toast(ed?'Revisão atualizada ✔':'Revisão salva ✔'); await refresh();
   };
 }
@@ -443,7 +449,7 @@ function detalhe(m,r){
   if(!r) return;
   const fotos=[...(r.fotoMedidor?[{b:r.fotoMedidor,c:medidorNome(m)}]:[]), ...(r.fotosMaquina||[]).map((b,i)=>({b,c:'Máquina '+(i+1)}))];
   const body=abrir(`${m.nome} — ${dataBR(r.data)}`, `
-    ${fotos.length?`<div class="gallery">${fotos.map(f=>`<figure><img src="${esc(blobUrl(f.b))}" alt="${esc(f.c)}"><figcaption>${esc(f.c)}</figcaption></figure>`).join('')}</div>`:''}
+    ${fotos.length?`<div class="gallery">${fotos.map(f=>`<figure><img ${imgAttr(f.b)} alt="${esc(f.c)}"><figcaption>${esc(f.c)}</figcaption></figure>`).join('')}</div>`:''}
     <dl class="kv">
       <div><dt>Data</dt><dd>${dataBR(r.data)}</dd></div>
       <div><dt>${medidorNome(m)}</dt><dd>${r.leitura!=null?num(r.leitura)+' '+unidade(m):'—'}</dd></div>
@@ -458,12 +464,12 @@ function detalhe(m,r){
     </div>`);
   body.querySelectorAll('.gallery img').forEach(i=>i.onclick=()=>verFoto(i.src));
   $('#bEdit',body).onclick=()=>formRevisao(m,r);
-  $('#bDel',body).onclick=async()=>{ if(!confirm('Excluir esta revisão? Isso não pode ser desfeito.')) return; await del('revisoes',r.id); fechar(); toast('Revisão excluída'); refresh(); };
+  $('#bDel',body).onclick=async()=>{ if(!confirm('Excluir esta revisão? Isso não pode ser desfeito.')) return; await deleteRecord('revisoes',r.id); fechar(); toast('Revisão excluída'); refresh(); };
   $('#bShare',body).onclick=()=>compartilhar(m,r);
 }
 async function compartilhar(m,r){
   const text=resumoTexto(m,r);
-  const blobs=[r.fotoMedidor,...(r.fotosMaquina||[])].filter(Boolean);
+  const blobs=(await Promise.all([r.fotoMedidor,...(r.fotosMaquina||[])].filter(Boolean).map(resolveBlob))).filter(b=>b && typeof b!=='string');
   const files=blobs.map((b,i)=>new File([b],`${m.id}-${r.data}-${i+1}.jpg`,{type:'image/jpeg'}));
   try{
     if(files.length && navigator.canShare && navigator.canShare({files})){ await navigator.share({files, text, title:'Revisão '+m.nome}); return; }
@@ -492,7 +498,7 @@ function sigPad(wrap, initial){
     ctx.lineWidth=2.6; ctx.lineCap='round'; ctx.lineJoin='round'; ctx.strokeStyle='#0b1f4d'; }
   function size(){ const r=cv.getBoundingClientRect(); if(!r.width) return; W=r.width; H=r.height; const dpr=Math.min(3,window.devicePixelRatio||1);
     cv.width=Math.round(W*dpr); cv.height=Math.round(H*dpr); base();
-    if(cur){ const im=new Image(); im.onload=()=>{ ctx.drawImage(im,0,0,W,H); }; im.src=blobUrl(cur); } }
+    if(cur){ resolveBlob(cur).then(b=>{ if(!b) return; const im=new Image(); im.onload=()=>{ ctx.drawImage(im,0,0,W,H); }; im.src=blobUrl(b); }); } }
   requestAnimationFrame(size);
   const pt=(e)=>{ const r=cv.getBoundingClientRect(); return {x:e.clientX-r.left, y:e.clientY-r.top}; };
   cv.addEventListener('pointerdown',e=>{ e.preventDefault(); if(!W) size(); drawing=true; last=pt(e); try{cv.setPointerCapture(e.pointerId);}catch(_){}
@@ -507,7 +513,7 @@ function sigPad(wrap, initial){
     get:()=> new Promise(res=>{ if(!dirty) return res(cur); cv.toBlob(b=>res(b),'image/png'); }),
   };
 }
-async function proximoNumeroOS(){ return ((await getOne('meta','osSeq'))?.v||0)+1; }
+async function proximoNumeroOS(reserve){ const lv=(await getOne('meta','osSeq'))?.v||0; return (reserve && window.Cloud && Cloud.isEnabled()) ? await Cloud.nextOsNumero(lv) : lv+1; }
 
 async function formOS(m, r){
   const ed=!!r; r=r||{};
@@ -519,7 +525,7 @@ async function formOS(m, r){
   const veic = isVeic(m);
   const body = abrir(ed?`Editar OS ${pad4(r.numero)}`:`Nova OS — ${m.nome}`, `
     <form id="fOS" autocomplete="off" novalidate>
-      <div class="os-head"><img src="${esc(blobUrl(m.foto))}" alt=""><div><small>Ordem de Serviço</small><b>Nº ${pad4(numPrev)}</b><span>${esc(m.nome)} · ${esc(m.tipo||'')}</span>
+      <div class="os-head"><img ${imgAttr(m.foto)} alt=""><div><small>Ordem de Serviço</small><b>Nº ${pad4(numPrev)}</b><span>${esc(m.nome)} · ${esc(m.tipo||'')}</span>
         <span>${m.ano?'Ano '+esc(m.ano)+' · ':''}${veic?(m.placa?'Placa '+esc(m.placa)+' · ':'')+(m.chassi?'Chassi '+esc(m.chassi):''):(m.serie?'Série '+esc(m.serie):'')}</span></div></div>
       <div class="grid2">
         <label class="f"><span>Entrada</span><input class="in" type="datetime-local" name="entrada" value="${esc(r.entrada||agoraLocal())}" required></label>
@@ -609,7 +615,7 @@ async function formOS(m, r){
     const pend=check.filter(c=>!c.st).length;
     if(pend && !confirm(`${pend} itens do checklist estão sem marcação. Salvar mesmo assim?`)) return;
     const tp=totais(), mo=parseValor(f.maoObra.value);
-    const numero = ed ? r.numero : await proximoNumeroOS();
+    const numero = ed ? r.numero : await proximoNumeroOS(true);
     const obj={...r, id:r.id||uid(), tipo:'os', numero, maquinaId:m.id,
       entrada:f.entrada.value||agoraLocal(), saida:f.saida.value||'', data:(f.entrada.value||agoraLocal()).slice(0,10),
       leitura:parseLeitura(f.leitura.value), solicitante:f.solicitante.value.trim(), mecanico:f.mecanico.value.trim(), responsavel:f.responsavel.value.trim(),
@@ -619,7 +625,7 @@ async function formOS(m, r){
       fotoMedidor:pMed.get()[0]||null, fotosMaquina:pMaq.get(),
       assinaturaMec:await sMec.get(), assinaturaResp:await sResp.get(),
       criadoEm:r.criadoEm||Date.now(), atualizadoEm:Date.now()};
-    try{ await put('revisoes',obj); if(!ed) await put('meta',{k:'osSeq',v:numero}); }catch(err){ alert('Erro ao salvar: '+err); return; }
+    try{ await saveRecord('revisoes',obj); if(!ed){ await put('meta',{k:'osSeq',v:numero}); if(window.Cloud) await Cloud.enqueue('meta','osSeq','put',Date.now()); } }catch(err){ alert('Erro ao salvar: '+err); return; }
     toast(ed?`OS ${pad4(numero)} atualizada ✔`:`OS ${pad4(numero)} salva ✔`);
     await refresh(); detalheOS(m,obj);
   };
@@ -645,8 +651,8 @@ function detalheOS(m,r){
     <dl class="kv"><div><dt>Peças</dt><dd>${brl(r.totalPecas)}</dd></div><div><dt>Mão de obra</dt><dd>${brl(r.maoObra)}</dd></div><div><dt><b>Total geral</b></dt><dd>${brl(r.custo)}</dd></div></dl>
     ${r.servicoExecutado?`<div class="block"><small>Serviço executado</small>${esc(r.servicoExecutado)}</div>`:''}
     ${r.observacoes?`<div class="block"><small>Observações</small>${esc(r.observacoes)}</div>`:''}
-    ${fotos.length?`<div class="gallery">${fotos.map(f=>`<figure><img src="${esc(blobUrl(f.b))}" alt="${esc(f.c)}"><figcaption>${esc(f.c)}</figcaption></figure>`).join('')}</div>`:''}
-    <div class="sigs">${[[r.assinaturaMec,'Mecânico',r.mecanico],[r.assinaturaResp,'Responsável / cliente',r.responsavel]].map(([b,t,n])=>`<div>${b?`<img src="${esc(blobUrl(b))}" alt="">`:'<div class="nosig">sem assinatura</div>'}<span>${esc(n||'—')}</span><small>${t}</small></div>`).join('')}</div>
+    ${fotos.length?`<div class="gallery">${fotos.map(f=>`<figure><img ${imgAttr(f.b)} alt="${esc(f.c)}"><figcaption>${esc(f.c)}</figcaption></figure>`).join('')}</div>`:''}
+    <div class="sigs">${[[r.assinaturaMec,'Mecânico',r.mecanico],[r.assinaturaResp,'Responsável / cliente',r.responsavel]].map(([b,t,n])=>`<div>${b?`<img ${imgAttr(b)} alt="">`:'<div class="nosig">sem assinatura</div>'}<span>${esc(n||'—')}</span><small>${t}</small></div>`).join('')}</div>
     <div class="stack">
       <button class="btn pri" id="bPDF">📄 Gerar PDF</button>
       <button class="btn dark" id="bShare">📤 Compartilhar resumo</button>
@@ -654,9 +660,9 @@ function detalheOS(m,r){
     </div>`);
   body.querySelectorAll('.gallery img').forEach(i=>i.onclick=()=>verFoto(i.src));
   $('#bPDF',body).onclick=()=>pdfOS(m,r);
-  $('#bShare',body).onclick=()=>compartilharTexto(resumoOS(m,r), 'OS '+pad4(r.numero), [r.fotoMedidor,...(r.fotosMaquina||[])].filter(Boolean).map((b,i)=>new File([b],`OS-${pad4(r.numero)}-${i+1}.jpg`,{type:'image/jpeg'})));
+  $('#bShare',body).onclick=async()=>compartilharTexto(resumoOS(m,r), 'OS '+pad4(r.numero), (await Promise.all([r.fotoMedidor,...(r.fotosMaquina||[])].filter(Boolean).map(resolveBlob))).filter(b=>b && typeof b!=='string').map((b,i)=>new File([b],`OS-${pad4(r.numero)}-${i+1}.jpg`,{type:'image/jpeg'})));
   $('#bEdit',body).onclick=()=>formOS(m,r);
-  $('#bDel',body).onclick=async()=>{ if(!confirm(`Excluir a OS ${pad4(r.numero)}? Isso não pode ser desfeito.`)) return; await del('revisoes',r.id); fechar(); toast('OS excluída'); refresh(); };
+  $('#bDel',body).onclick=async()=>{ if(!confirm(`Excluir a OS ${pad4(r.numero)}? Isso não pode ser desfeito.`)) return; await deleteRecord('revisoes',r.id); fechar(); toast('OS excluída'); refresh(); };
 }
 function resumoOS(m,r){
   const l=[`📋 *OS ${pad4(r.numero)} — ${m.nome}*`, m.tipo||'', `📥 Entrada: ${dtBR(r.entrada)}`, `📤 Saída: ${dtBR(r.saida)}`,
@@ -688,7 +694,9 @@ async function ensurePDF(){
 async function imgData(src, maxPx=1100, fmt='image/jpeg'){
   if(!src) return null;
   try{
-    const url = typeof src==='string' ? src : blobUrl(src);
+    const resolved = await resolveBlob(src);
+    if(!resolved) return null;
+    const url = typeof resolved==='string' ? resolved : blobUrl(resolved);
     const img = await new Promise((res,rej)=>{ const i=new Image(); i.onload=()=>res(i); i.onerror=rej; i.src=url; });
     let w=img.naturalWidth, h=img.naturalHeight; const k=Math.min(1,maxPx/Math.max(w,h)); w=Math.round(w*k); h=Math.round(h*k);
     const c=document.createElement('canvas'); c.width=w; c.height=h; const x=c.getContext('2d');
@@ -883,20 +891,72 @@ function formMaquina(m){
       docs:docs.filter(d=>d.nome.trim()).map(d=>({...d, nome:d.nome.trim()})),
       ordem: m.ordem ?? (Math.max(-1,...maquinas.map(x=>x.ordem??0))+1)};
     if(foto!==m.foto) obj.credito=null;
-    await put('maquinas',obj); fechar(); toast('Equipamento salvo ✔'); await loadMaquinas(); await calcAlertas(); selecionar(obj.id);
+    await saveRecord('maquinas',obj); fechar(); toast('Equipamento salvo ✔'); await loadMaquinas(); await calcAlertas(); selecionar(obj.id);
   };
   if(ed) $('#bDelM',body).onclick=async()=>{
     const n=(await revsOf(m.id)).length;
     if(!confirm(`Remover "${m.nome}"${n?` e seus ${n} registros (OS/revisões)`:''}? Isso não pode ser desfeito.`)) return;
-    for(const r of await revsOf(m.id)) await del('revisoes',r.id);
-    await del('maquinas',m.id); fechar(); await loadMaquinas(); await calcAlertas(); toast('Equipamento removido');
+    for(const r of await revsOf(m.id)) await deleteRecord('revisoes',r.id);
+    await deleteRecord('maquinas',m.id); fechar(); await loadMaquinas(); await calcAlertas(); toast('Equipamento removido');
     selecionar('__home');
   };
 }
 
 /* ---------- menu / backup ---------- */
+function renderCloudBtn(){
+  const btn=$('#btnCloud'); if(!btn) return;
+  if(!window.Cloud || !Cloud.isEnabled()){ btn.hidden=true; return; }
+  const st=Cloud.getStatus(), u=Cloud.getUser();
+  btn.hidden=false;
+  btn.className='cloud-btn '+(st.state||'');
+  const icon = st.state==='ok'?'☁️':st.state==='syncing'?'🔄':st.state==='offline'?'📴':'🔒';
+  btn.textContent = u ? `${icon} ${st.text||'Nuvem'}` : '🔒 Entrar';
+}
+function formLogin(msg){
+  if(!window.Cloud || !Cloud.isEnabled()) return;
+  const body=abrir('Entrar na nuvem — BM Sistemas', `
+    <p class="note">Entre com seu e-mail e senha para sincronizar equipamentos, OS, assinaturas e fotos entre celular e computador.</p>
+    ${msg?`<div class="err-box">${esc(msg)}</div>`:''}
+    <form id="fLogin" autocomplete="on">
+      <label class="f"><span>E-mail</span><input class="in" type="email" name="email" required autocomplete="username" placeholder="seu@email.com"></label>
+      <label class="f"><span>Senha</span><input class="in" type="password" name="password" required autocomplete="current-password" placeholder="••••••"></label>
+      <button class="btn pri" type="submit">🔓 Entrar e sincronizar</button>
+    </form>`);
+  const f=$('#fLogin',body);
+  f.onsubmit=async e=>{
+    e.preventDefault();
+    const btn=f.querySelector('button[type=submit]'); btn.disabled=true; btn.textContent='Entrando…';
+    try{
+      await Cloud.login(f.email.value, f.password.value);
+      fechar(); toast('Conectado e sincronizado ✔');
+      await refresh(); renderCloudBtn();
+    }catch(err){
+      btn.disabled=false; btn.textContent='🔓 Entrar e sincronizar';
+      const txt=(err?.message||'').includes('Invalid login')?'E-mail ou senha incorretos.':'Erro ao entrar: '+(err?.message||err);
+      formLogin(txt);
+    }
+  };
+}
+function renderLoginScreen(){
+  const main=$('#main');
+  main.innerHTML=`<div class="wrap"><div class="login-card">
+    <h2>🔒 Acesso à frota — BM Sistemas</h2>
+    <p class="note">Faça login com sua conta para carregar e sincronizar os equipamentos e Ordens de Serviço na nuvem.</p>
+    <button class="btn pri" id="bGoLogin">Entrar com e-mail e senha</button>
+  </div></div>`;
+  $('#bGoLogin').onclick=()=>formLogin();
+}
 function menu(){
+  const u=window.Cloud && Cloud.isEnabled() ? Cloud.getUser() : null;
+  const cloudHtml = (window.Cloud && Cloud.isEnabled())
+    ? (u ? `<div class="block"><small>Nuvem conectada</small><b>${esc(u.email||'')}</b></div>
+            <button class="btn ghost" id="mSync">🔄 Sincronizar agora</button>
+            <button class="btn ghost" id="mSenha">🔑 Alterar senha</button>
+            <button class="btn ghost" id="mLogout">🚪 Sair da conta</button>`
+         : `<button class="btn pri" id="mLogin">🔒 Entrar na nuvem</button>`)
+    : '';
   const body=abrir('Menu', `<div class="stack menu-list">
+    ${cloudHtml}
     <button class="btn ghost" id="mHome">🏠 Todos os equipamentos</button>
     <button class="btn ghost" id="mAl">⚠️ Alertas de vencimento</button>
     <button class="btn ghost" id="mAdd">＋ Adicionar equipamento</button>
@@ -905,7 +965,7 @@ function menu(){
     <button class="btn ghost" id="mInst">📱 Instalar na tela inicial</button>
     <button class="btn ghost" id="mCred">ℹ️ Sobre e créditos das fotos</button>
     <input type="file" id="impFile" accept="application/json,.json" hidden>
-    <p class="note">⚠️ Os dados ficam salvos <b>somente neste aparelho/navegador</b>. Use <b>Exportar backup</b> com frequência para guardar uma cópia ou passar para outro celular.</p>
+    <p class="note">☁️ Com login na nuvem, o celular e o computador passam a mostrar os mesmos registros. Mesmo assim, use <b>Exportar backup</b> de vez em quando.</p>
   </div>`);
   $('#mHome',body).onclick=()=>{ fechar(); selecionar('__home'); };
   $('#mAl',body).onclick=()=>{ fechar(); selecionar('__alertas'); };
@@ -915,12 +975,34 @@ function menu(){
   $('#impFile',body).onchange=e=>{ const f=e.target.files[0]; if(f) importar(f); };
   $('#mInst',body).onclick=instalar;
   $('#mCred',body).onclick=creditos;
+  if($('#mSync',body)) $('#mSync',body).onclick=async()=>{ fechar(); toast('Sincronizando…'); await Cloud.syncNow(); renderCloudBtn(); };
+  if($('#mLogin',body)) $('#mLogin',body).onclick=()=>formLogin();
+  if($('#mSenha',body)) $('#mSenha',body).onclick=()=>formSenha();
+  if($('#mLogout',body)) $('#mLogout',body).onclick=async()=>{ if(!confirm('Sair da conta na nuvem neste aparelho?')) return; await Cloud.logout(); fechar(); renderCloudBtn(); renderLoginScreen(); };
+}
+function formSenha(msg){
+  const body=abrir('Alterar senha da nuvem', `
+    <p class="note">A nova senha vale em todos os aparelhos no próximo login.</p>
+    ${msg?`<div class="err-box">${esc(msg)}</div>`:''}
+    <form id="fSenha">
+      <label class="f"><span>Nova senha</span><input class="in" type="password" name="p1" required minlength="8" autocomplete="new-password" placeholder="mínimo 8 caracteres"></label>
+      <label class="f"><span>Repita a nova senha</span><input class="in" type="password" name="p2" required minlength="8" autocomplete="new-password"></label>
+      <button class="btn pri" type="submit">💾 Salvar nova senha</button>
+    </form>`);
+  $('#fSenha',body).onsubmit=async e=>{
+    e.preventDefault(); const f=e.target;
+    if(f.p1.value!==f.p2.value){ formSenha('As senhas não coincidem.'); return; }
+    if(f.p1.value.length<8){ formSenha('A senha deve ter pelo menos 8 caracteres.'); return; }
+    const btn=f.querySelector('button[type=submit]'); btn.disabled=true;
+    try{ await Cloud.changePassword(f.p1.value); fechar(); toast('Senha atualizada ✔'); }
+    catch(err){ formSenha('Não foi possível alterar: '+(err?.message||err)); }
+  };
 }
 const BLOB_FIELDS=['fotoMedidor','assinaturaMec','assinaturaResp'];
 async function exportar(){
   toast('Gerando backup…');
   const maqs=await getAll('maquinas'), revs=await getAll('revisoes');
-  const enc=async b=> (b && typeof b!=='string') ? await blobToDataURL(b) : b;
+  const enc=async b=>{ const r=await resolveBlob(b); return (r && typeof r!=='string') ? await blobToDataURL(r) : r; };
   const encR=async r=>{ const o={...r, fotosMaquina:await Promise.all((r.fotosMaquina||[]).map(enc))}; for(const k of BLOB_FIELDS) o[k]=await enc(r[k]); return o; };
   const data={app:'controle-frota', versao:2, exportadoEm:new Date().toISOString(), osSeq:(await getOne('meta','osSeq'))?.v||0,
     maquinas: await Promise.all(maqs.map(async m=>({...m, foto:await enc(m.foto)}))),
@@ -955,7 +1037,7 @@ async function instalar(){
 }
 function creditos(){
   abrir('Sobre', `<div class="block"><b>BM Sistemas — Controle de Frota</b> v${APP_VERSION}<br>Ordens de serviço com checklist, assinatura e PDF; revisões com fotos, horímetro/hodômetro, mecânico e custos; documentos e alertas de vencimento. Funciona offline.</div>
-    <div class="block"><small>Onde ficam os dados</small>Tudo é salvo no próprio aparelho (no navegador). Se limpar os dados do navegador ou trocar de celular, os registros não vão junto — faça <b>Exportar backup</b> e depois <b>Importar backup</b> no outro aparelho.</div>
+    <div class="block"><small>Onde ficam os dados</small>Com a <b>nuvem ligada</b> (login no app), os registros, fotos e assinaturas sincronizam entre o celular e o computador. Sem login, tudo continua só neste aparelho — faça <b>Exportar backup</b> com frequência.</div>
     <h3 class="sec">Créditos das fotos (Wikimedia Commons)</h3>
     <ul class="credits">${DEFAULT_MACHINES.filter(m=>m.credito).map(m=>`<li><b>${esc(m.nome)}</b>${m.credito.aprox?' <span class="pill prox">aproximada</span>':''}: ${esc(m.credito.autor)} — ${esc(m.credito.licenca)}. ${esc(m.credito.obs)} <a href="${esc(m.credito.url)}" target="_blank" rel="noopener">Ver original</a></li>`).join('')}<li><b>W20E</b>, <b>Saveiro quadrada</b>, <b>Hilux STD</b>, <b>F-250 XL 2010</b>, <b>JCB 426EX</b> e <b>Axor 2644</b>: foto própria (BM Sistemas).</li></ul>
     <p class="note">Fotos marcadas como <b>aproximada</b> são ilustrativas — troque pela foto real no ✎ de cada equipamento. Licenças CC BY / CC BY-SA exigem atribuição.</p>
@@ -964,12 +1046,25 @@ function creditos(){
 
 /* ---------- init ---------- */
 $('#btnMenu').onclick=menu;
+$('#btnCloud').onclick=()=>{ if(!window.Cloud||!Cloud.isEnabled()) return; if(Cloud.getUser()) Cloud.syncNow(); else formLogin(); };
 (async()=>{
   try{ await seed(); await migrar(); await loadMaquinas(); await calcAlertas(); }catch(e){ $('#main').innerHTML=`<div class="wrap"><div class="empty">Não foi possível abrir o banco de dados do navegador.<br>${esc(e)}</div></div>`; return; }
   const saved=localStorage.getItem('frota.atual');
   atual = (saved==='__home'||saved==='__alertas'||maquinas.some(m=>m.id===saved)) ? saved : '__home';
-  renderTabs(); renderMain(); mostrarBanner();
+  const cloud = window.Cloud ? await Cloud.init({
+    getAll, getOne, put, del,
+    onStatus:()=>renderCloudBtn(),
+    onSyncApplied:async()=>{ if(!Cloud.isEnabled()||Cloud.getUser()) await refresh(); },
+    onAuthChanged:async(sess)=>{ renderCloudBtn(); if(sess){ await Cloud.syncNow(); await refresh(); mostrarBanner(); } else if(Cloud.isEnabled()){ renderLoginScreen(); } }
+  }) : {enabled:false};
+  renderCloudBtn();
+  if(cloud.enabled && !cloud.session){
+    $('#tabs').innerHTML=''; renderLoginScreen(); formLogin();
+  }else{
+    renderTabs(); renderMain(); mostrarBanner();
+    if(cloud.enabled) Cloud.syncNow();
+    notificar();
+  }
   if(navigator.storage && navigator.storage.persist) navigator.storage.persist().catch(()=>{});
   if('serviceWorker' in navigator) navigator.serviceWorker.register('sw.js').catch(()=>{});
-  notificar();
 })();

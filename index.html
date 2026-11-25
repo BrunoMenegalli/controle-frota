@@ -20,7 +20,7 @@
 <body>
 <header class="topbar">
   <div class="brand"><img src="icons/icon-192.png" alt=""><div><b>BM Sistemas</b><small>Controle de Frota</small></div></div>
-  <button class="icon-btn" id="btnMenu" aria-label="Menu">⋮</button>
+  <div class="top-acts"><button class="cloud-btn" id="btnCloud" hidden></button><button class="icon-btn" id="btnMenu" aria-label="Menu">⋮</button></div>
 </header>
 <nav class="tabs" id="tabs" role="tablist"></nav>
 <div class="banner" id="banner" hidden></div>
@@ -34,6 +34,9 @@
 </div>
 <div class="viewer" id="viewer" hidden><img id="viewerImg" alt=""><button class="icon-btn" data-closeviewer aria-label="Fechar">✕</button></div>
 <div class="toast" id="toast" hidden></div>
+<script src="cloud-config.js"></script>
+<script src="lib/supabase.min.js"></script>
+<script src="cloud.js"></script>
 <script src="app.js"></script>
 </body>
 </html>
