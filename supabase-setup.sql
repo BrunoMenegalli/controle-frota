@@ -147,3 +147,65 @@ create policy "frota media update" on storage.objects
 drop policy if exists "frota media delete" on storage.objects;
 create policy "frota media delete" on storage.objects
   for delete to authenticated using (bucket_id = 'frota-media' and public.is_frota_membro());
+
+
+-- 6. Aparelhos conectados (lista no app; last_seen atualizado ao abrir/sincronizar)
+create table if not exists public.frota_dispositivos (
+  device_id text primary key,
+  email text not null,
+  nome text not null,
+  apelido text,
+  user_agent text,
+  first_seen timestamptz not null default now(),
+  last_seen timestamptz not null default now()
+);
+create index if not exists idx_frota_disp_seen on public.frota_dispositivos (last_seen desc);
+create index if not exists idx_frota_disp_email on public.frota_dispositivos (email);
+alter table public.frota_dispositivos enable row level security;
+drop policy if exists "membros all dispositivos" on public.frota_dispositivos;
+create policy "membros all dispositivos" on public.frota_dispositivos
+  for all to authenticated using (public.is_frota_membro()) with check (public.is_frota_membro());
+grant select, insert, update, delete on table public.frota_dispositivos to authenticated;
+
+
+-- =============================================================================
+-- 7. Papéis, acessos, valores e PIN (v2.2)
+-- Documentação do que já está aplicado no projeto. Não contém senhas nem o PIN.
+-- =============================================================================
+
+-- frota_membros: email (pk), nome, role ('admin'|'membro'), ativo
+-- Bruno (bruno_menegalli@hotmail.com) é o administrador ativo.
+-- is_frota_membro() exige ativo=true. is_frota_admin() exige role=admin e ativo=true.
+-- Apenas administradores ativos selecionam todos os membros.
+
+-- frota_financeiro: revisao_id (pk), custo, mao_obra, total_pecas, pecas, notas, updated_at
+-- RLS ligado, sem políticas; grants revogados de anon/authenticated.
+-- Leitura só via frota_financeiro_lido(token) depois do PIN. Valores NÃO ficam em frota_revisoes.dados.
+-- Trigger BEFORE INSERT/UPDATE frota_revisoes_split_financeiro (SECURITY DEFINER):
+--   sempre remove custo/maoObra/totalPecas/notas e preços de peças de dados;
+--   marca temNotas se havia nota fiscal;
+--   grava em frota_financeiro só se o autor é admin e a carga tem valores de fato
+--   (frota_fin_tem_valores), para um salvamento "travado" não apagar custos.
+-- Trigger AFTER DELETE frota_financeiro_cascade_del remove a linha financeira.
+
+-- Bucket frota-media: caminhos nf/ e financeiro/ são somente admin (SELECT/INSERT/UPDATE/DELETE).
+-- Demais caminhos: membros ativos leem; upload conforme políticas de membro.
+
+-- PIN do administrador (somente Bruno):
+--   frota_pin (id=1, pin_hash bcrypt, fail_count, locked_until) e frota_pin_unlock
+--   (token, email, expires_at ~10 min). RLS ligado, SEM políticas: acesso só via RPC.
+--   O PIN inicial foi gravado só como hash (nunca em texto neste repositório).
+--   RPCs (SECURITY DEFINER, execute só para authenticated, chamador precisa ser admin ativo):
+--     frota_pin_status()
+--     frota_pin_definir(pin_atual, pin_novo) -- 4 a 6 dígitos; exige PIN atual
+--     frota_desbloquear_valores(pin) -- 5 erros = bloqueio de 5 min; devolve token de 10 min
+--     frota_financeiro_lido(unlock_token) -- devolve custos só com token válido
+--   Extensão pgcrypto (schema extensions).
+
+-- Edge Function gerenciar-acesso (verify_jwt=true). service_role só no servidor.
+-- Ações: listar, liberar (convite por e-mail se o usuário ainda não existir;
+-- redirect_to do app), bloquear, desbloquear. Não deixa bloquear o último admin.
+-- Ao bloquear: ativo=false (RLS barra na hora) e ban/signOut se o usuário Auth existir.
+
+-- Cadastro público e Site URL do Auth não podem ser alterados pelas ferramentas
+-- disponíveis; ajustar no painel do Supabase se ainda estiver pendente.

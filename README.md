@@ -14,8 +14,16 @@ Fotos das máquinas: Wikimedia Commons — créditos e licenças em *Menu → So
 Ícone: monograma BM (fonte Outfit, SIL OFL, convertida em curvas) — fonte em `icons/src/`.
 
 
-## Sincronização na nuvem (v2.1)
+## Sincronização na nuvem (v2.2)
 
 Com login (e-mail e senha), o celular e o computador passam a mostrar os mesmos equipamentos, OS, fotos, assinaturas e vencimentos. Os dados continuam em cache no aparelho (IndexedDB) e funcionam offline; ao reconectar, a fila é enviada.
 
 Backend: projeto gratuito **Supabase** (`bm-sistemas`, região São Paulo). O script `supabase-setup.sql` documenta tabelas, RLS e o bucket privado `frota-media`. Um workflow (`supabase-keepalive.yml`) pinga a API toda segunda-feira para o projeto gratuito não pausar após 7 dias parado.
+
+Acesso: só quem está em `frota_membros` com status ativo entra nos dados. O administrador (Bruno) libera ou bloqueia pessoas em **Gerenciar acessos**. Quem é bloqueado deixa de ver a frota na hora.
+
+Valores (custos, mão de obra, peças, totais e notas fiscais) vêm mascarados como **R$ ****** para todo mundo, inclusive o administrador, até ele tocar em **Mostrar valores** e informar o PIN. A liberação vale só na sessão, cerca de 10 minutos, ou até fechar o app. Os valores reais não ficam no aparelho enquanto estão ocultos (só chegam depois do PIN, pela API). Membros nunca desbloqueiam. O PIN pode ser trocado em **Alterar PIN**. Documentos de nota fiscal continuam só para o administrador (placeholder com cadeado para os demais).
+
+Menu **Aparelhos conectados** lista os dispositivos que já entraram, com horário de Belém, e permite apelido ou remoção.
+
+Se esquecer a senha, use **Esqueci a senha**: chega um e-mail com link para **Criar nova senha** neste mesmo app.

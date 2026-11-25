@@ -1,4 +1,4 @@
-const CACHE='bm-sistemas-v10';
+const CACHE='bm-sistemas-v11';
 const ASSETS=['./','index.html','app.css','app.js','cloud-config.js','cloud.js','manifest.webmanifest','icons/icon-192.png','icons/icon-512.png','icons/icon-maskable-192.png','icons/icon-maskable-512.png','icons/apple-touch-icon.png','icons/favicon-32.png','icons/favicon-16.png','icons/src/bm-icon.svg',
  'img/volvo-l90.jpg','img/case-w20e-bm.jpg','img/saveiro-bm.jpg','img/hilux-std-bm.jpg','img/f250-bm.jpg','img/jcb-426ex-bm.jpg','img/axor-2644-bm.jpg',
  'img/semi-reboque-prancha.jpg','img/empilhadeira-longking.jpg','img/case-w20d.jpg','img/cat-320d2.jpg','img/komatsu-pc210.jpg','img/komatsu-d50a.jpg','img/komatsu-d51ex.jpg',
