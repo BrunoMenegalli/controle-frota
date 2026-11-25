@@ -1,6 +1,6 @@
 'use strict';
 /* BM Sistemas — Controle de Frota — PWA offline. Dados ficam no aparelho (IndexedDB). */
-const APP_VERSION = '2.1.0';
+const APP_VERSION = '2.2.0';
 const MAX_PX = 1280, JPEG_Q = 0.8;
 
 /* Categorias: definem campos (série x chassi/placa), itens de vencimento e checklist da OS */
@@ -121,6 +121,16 @@ const $ = (s,el=document)=>el.querySelector(s);
 const esc = (s)=>String(s??'').replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
 const uid = ()=> Date.now().toString(36)+Math.random().toString(36).slice(2,8);
 const brl = (n)=> (Number(n)||0).toLocaleString('pt-BR',{style:'currency',currency:'BRL'});
+function valoresLiberados(){ return !!(window.Cloud && Cloud.isAdmin && Cloud.isAdmin() && Cloud.valoresLiberados && Cloud.valoresLiberados()); }
+function brlVis(n){ return valoresLiberados() ? brl(n) : 'R$ ****'; }
+function recVis(r){ return (window.Cloud && Cloud.comValores) ? Cloud.comValores(r) : r; }
+function semFinanceiro(rec){
+  if(!rec) return rec;
+  const o={...rec};
+  delete o.custo; delete o.maoObra; delete o.totalPecas; delete o.notasFiscais; delete o.notas;
+  if(Array.isArray(o.pecas)) o.pecas=o.pecas.map(p=>p&&typeof p==='object'?((x=>{const y={...x}; delete y.unit; delete y.valor; delete y.preco; delete y.total; delete y.custo; return y;})(p)):p);
+  return o;
+}
 const num = (n)=> (Number(n)||0).toLocaleString('pt-BR',{maximumFractionDigits:1});
 function hoje(){ const d=new Date(); d.setMinutes(d.getMinutes()-d.getTimezoneOffset()); return d.toISOString().slice(0,10); }
 function dataBR(iso){ if(!iso) return '—'; const [y,m,d]=iso.split('-'); return `${d}/${m}/${y}`; }
@@ -136,7 +146,25 @@ const urls = new Map();
 function blobUrl(b){ if(!b) return ''; if(typeof b==='string'){ if(b.startsWith('storage:') && window.Cloud) return Cloud.mediaUrl(b); return b; } if(!urls.has(b)) urls.set(b, URL.createObjectURL(b)); return urls.get(b); }
 function imgAttr(b){ return `src="${esc(blobUrl(b))}"${typeof b==='string'&&b.startsWith('storage:')?` data-media="${esc(b)}"`:''}`; }
 async function resolveBlob(b){ if(!b) return null; if(typeof b!=='string') return b; if(b.startsWith('storage:') && window.Cloud) return await Cloud.ensureMediaBlob(b); if(b.startsWith('data:')) return await dataURLToBlob(b); return b; }
-async function saveRecord(store, obj){ obj.atualizadoEm=Date.now(); await put(store,obj); if(window.Cloud) await Cloud.enqueue(store,obj.id,'put',obj.atualizadoEm); }
+function financePayload(obj){
+  if(!obj) return null;
+  const pecas=Array.isArray(obj.pecas)?obj.pecas:null;
+  const has=obj.custo!=null||obj.maoObra!=null||obj.totalPecas!=null||(Array.isArray(obj.notasFiscais)&&obj.notasFiscais.length)||(pecas&&pecas.some(p=>p&&(p.unit!=null||p.valor!=null||p.preco!=null)));
+  if(!has) return null;
+  return {custo:obj.custo,maoObra:obj.maoObra,totalPecas:obj.totalPecas,pecas:obj.pecas,notasFiscais:obj.notasFiscais};
+}
+async function saveRecord(store, obj){
+  obj.atualizadoEm=Date.now();
+  if(store==='revisoes'){
+    const fin=valoresLiberados()?financePayload(obj):null;
+    const stripped=semFinanceiro({...obj});
+    await put(store,stripped);
+    if(window.Cloud) await Cloud.enqueue(store,stripped.id,'put',stripped.atualizadoEm, fin?{finance:fin}:undefined);
+  }else{
+    await put(store,obj);
+    if(window.Cloud) await Cloud.enqueue(store,obj.id,'put',obj.atualizadoEm);
+  }
+}
 async function deleteRecord(store, id){ await del(store,id); if(window.Cloud) await Cloud.enqueue(store,id,'del',Date.now()); }
 function toast(msg,ms=2500){ const t=$('#toast'); t.textContent=msg; t.hidden=false; clearTimeout(toast._t); toast._t=setTimeout(()=>t.hidden=true,ms); }
 
@@ -263,7 +291,7 @@ async function notificar(){
     else new Notification(title,{body, icon:'icons/icon-192.png'});
   }catch(e){}
 }
-async function refresh(){ await loadMaquinas(); await calcAlertas(); renderTabs(); await renderMain(); }
+async function refresh(){ await loadMaquinas(); await calcAlertas(); renderTabs(); await renderMain(); renderValoresBtn(); }
 
 /* ---------- abas / telas ---------- */
 function renderTabs(){
@@ -325,7 +353,7 @@ function renderAlertas(){
 
 async function renderMaquina(m){
   const main=$('#main');
-  const regs = (await revsOf(m.id)).sort((a,b)=> (b.data||'').localeCompare(a.data||'') || (b.criadoEm||0)-(a.criadoEm||0));
+  const regs = (await revsOf(m.id)).map(recVis).sort((a,b)=> (b.data||'').localeCompare(a.data||'') || (b.criadoEm||0)-(a.criadoEm||0));
   const total = regs.reduce((s,r)=>s+(Number(r.custo)||0),0);
   const leit = leituraAtual(m, regs);
   const veic = isVeic(m);
@@ -339,7 +367,7 @@ async function renderMaquina(m){
     <div class="wrap">
       <p class="desc">${esc(m.descricao||'')}</p>
       <div class="stats">
-        <div class="stat"><small>Total gasto</small><b>${brl(total)}</b></div>
+        <div class="stat"><small>Total gasto</small><b>${brlVis(total)}</b></div>
         <div class="stat"><small>OS / revisões</small><b>${regs.length}</b></div>
         <div class="stat"><small>${medidorNome(m)} atual</small><b>${leit!=null?num(leit)+' '+unidade(m):'—'}</b></div>
       </div>
@@ -373,7 +401,7 @@ function itemRev(m,r){
   return `<button class="item" data-id="${esc(r.id)}">${th?`<img class="th" ${imgAttr(th)} alt="">`:`<div class="th ${os?'th-os':''}">${os?'OS':''}</div>`}
     <div class="meta"><b>${os?`<span class="tag-os">OS ${pad4(r.numero)}</span> `:''}${dataBR(r.data)} · ${r.leitura!=null?num(r.leitura)+' '+unidade(m):'—'}</b>
     <span>${linha2}</span><span>${linha3}</span></div>
-    <div class="cost">${brl(r.custo)}</div></button>`;
+    <div class="cost">${brlVis(r.custo)}</div></button>`;
 }
 /* ---------- modal ---------- */
 function abrir(titulo, html){
@@ -440,13 +468,13 @@ function formRevisao(m, r){
 function resumoTexto(m,r){
   const l=[`🔧 *Revisão — ${m.nome}*`, m.tipo?`${m.tipo}`:'', `📅 Data: ${dataBR(r.data)}`,
     `⏱️ ${medidorNome(m)}: ${r.leitura!=null?num(r.leitura)+' '+unidade(m):'—'}`,
-    `👨‍🔧 Mecânico: ${r.mecanico||'—'}`, `💰 Custo: ${brl(r.custo)}`];
+    `👨‍🔧 Mecânico: ${r.mecanico||'—'}`, `💰 Custo: ${brlVis(r.custo)}`];
   if(r.trocado) l.push('', '*Trocado / serviços:*', ...r.trocado.split('\n').filter(Boolean).map(x=>'• '+x));
   if(r.observacoes) l.push('', '*Obs.:* '+r.observacoes);
   return l.filter(x=>x!=='' || true).join('\n').replace(/\n{3,}/g,'\n\n');
 }
 function detalhe(m,r){
-  if(!r) return;
+  if(!r) return; r=recVis(r);
   const fotos=[...(r.fotoMedidor?[{b:r.fotoMedidor,c:medidorNome(m)}]:[]), ...(r.fotosMaquina||[]).map((b,i)=>({b,c:'Máquina '+(i+1)}))];
   const body=abrir(`${m.nome} — ${dataBR(r.data)}`, `
     ${fotos.length?`<div class="gallery">${fotos.map(f=>`<figure><img ${imgAttr(f.b)} alt="${esc(f.c)}"><figcaption>${esc(f.c)}</figcaption></figure>`).join('')}</div>`:''}
@@ -454,7 +482,7 @@ function detalhe(m,r){
       <div><dt>Data</dt><dd>${dataBR(r.data)}</dd></div>
       <div><dt>${medidorNome(m)}</dt><dd>${r.leitura!=null?num(r.leitura)+' '+unidade(m):'—'}</dd></div>
       <div><dt>Mecânico</dt><dd>${esc(r.mecanico||'—')}</dd></div>
-      <div><dt>Custo</dt><dd>${brl(r.custo)}</dd></div>
+      <div><dt>Custo</dt><dd>${brlVis(r.custo)}</dd></div>
     </dl>
     <div class="block"><small>O que foi trocado / serviços</small>${esc(r.trocado||'—')}</div>
     ${r.observacoes?`<div class="block"><small>Observações</small>${esc(r.observacoes)}</div>`:''}
@@ -632,6 +660,7 @@ async function formOS(m, r){
 }
 
 function detalheOS(m,r){
+  r=recVis(r);
   const fotos=[...(r.fotoMedidor?[{b:r.fotoMedidor,c:medidorNome(m)}]:[]), ...(r.fotosMaquina||[]).map((b,i)=>({b,c:'Foto '+(i+1)}))];
   const c={ok:0,nok:0,na:0}; (r.checklist||[]).forEach(x=>{ if(c[x.st]!=null) c[x.st]++; });
   const noks=(r.checklist||[]).filter(x=>x.st==='nok');
@@ -647,11 +676,14 @@ function detalheOS(m,r){
     </dl>
     ${r.servicoSolicitado?`<div class="block"><small>Serviço solicitado</small>${esc(r.servicoSolicitado)}</div>`:''}
     <div class="block"><small>Checklist</small><b class="g">${c.ok} OK</b> · <b class="r">${c.nok} não OK</b> · ${c.na} N/A${noks.length?'\n'+noks.map(x=>'✖ '+x.item+(x.obs?' — '+x.obs:'')).join('\n'):''}</div>
-    ${(r.pecas||[]).length?`<div class="block"><small>Peças e serviços</small><table class="tb">${r.pecas.map(p=>`<tr><td>${esc(p.desc)}</td><td>${num(p.qtd)}×</td><td>${brl((Number(p.qtd)||0)*(Number(p.unit)||0))}</td></tr>`).join('')}</table></div>`:''}
-    <dl class="kv"><div><dt>Peças</dt><dd>${brl(r.totalPecas)}</dd></div><div><dt>Mão de obra</dt><dd>${brl(r.maoObra)}</dd></div><div><dt><b>Total geral</b></dt><dd>${brl(r.custo)}</dd></div></dl>
+    ${(r.pecas||[]).length?`<div class="block"><small>Peças e serviços</small><table class="tb">${r.pecas.map(p=>`<tr><td>${esc(p.desc)}</td><td>${num(p.qtd)}×</td><td>${brlVis((Number(p.qtd)||0)*(Number(p.unit)||0))}</td></tr>`).join('')}</table></div>`:''}
+    <dl class="kv"><div><dt>Peças</dt><dd>${brlVis(r.totalPecas)}</dd></div><div><dt>Mão de obra</dt><dd>${brlVis(r.maoObra)}</dd></div><div><dt><b>Total geral</b></dt><dd>${brlVis(r.custo)}</dd></div></dl>
     ${r.servicoExecutado?`<div class="block"><small>Serviço executado</small>${esc(r.servicoExecutado)}</div>`:''}
     ${r.observacoes?`<div class="block"><small>Observações</small>${esc(r.observacoes)}</div>`:''}
     ${fotos.length?`<div class="gallery">${fotos.map(f=>`<figure><img ${imgAttr(f.b)} alt="${esc(f.c)}"><figcaption>${esc(f.c)}</figcaption></figure>`).join('')}</div>`:''}
+    ${r.temNotas || (r.notasFiscais && r.notasFiscais.length)? (valoresLiberados() && r.notasFiscais && r.notasFiscais.length
+      ? `<div class="gallery">${r.notasFiscais.map((b,i)=>`<figure><img ${imgAttr(b)} alt="NF ${i+1}"><figcaption>Nota fiscal ${i+1}</figcaption></figure>`).join('')}</div>`
+      : `<div class="nf-lock">🔒 Nota fiscal (documento protegido — só com PIN do administrador)</div>`) : ''}
     <div class="sigs">${[[r.assinaturaMec,'Mecânico',r.mecanico],[r.assinaturaResp,'Responsável / cliente',r.responsavel]].map(([b,t,n])=>`<div>${b?`<img ${imgAttr(b)} alt="">`:'<div class="nosig">sem assinatura</div>'}<span>${esc(n||'—')}</span><small>${t}</small></div>`).join('')}</div>
     <div class="stack">
       <button class="btn pri" id="bPDF">📄 Gerar PDF</button>
@@ -666,10 +698,10 @@ function detalheOS(m,r){
 }
 function resumoOS(m,r){
   const l=[`📋 *OS ${pad4(r.numero)} — ${m.nome}*`, m.tipo||'', `📥 Entrada: ${dtBR(r.entrada)}`, `📤 Saída: ${dtBR(r.saida)}`,
-    `⏱️ ${medidorNome(m)}: ${r.leitura!=null?num(r.leitura)+' '+unidade(m):'—'}`, `👨‍🔧 Mecânico: ${r.mecanico||'—'}`, `💰 Total: ${brl(r.custo)}`];
+    `⏱️ ${medidorNome(m)}: ${r.leitura!=null?num(r.leitura)+' '+unidade(m):'—'}`, `👨‍🔧 Mecânico: ${r.mecanico||'—'}`, `💰 Total: ${brlVis(r.custo)}`];
   if(r.servicoSolicitado) l.push('', '*Solicitado:* '+r.servicoSolicitado);
   const noks=(r.checklist||[]).filter(x=>x.st==='nok'); if(noks.length) l.push('', '*Itens não OK:*', ...noks.map(x=>'• '+x.item+(x.obs?' — '+x.obs:'')));
-  if((r.pecas||[]).length) l.push('', '*Peças/serviços:*', ...r.pecas.map(p=>`• ${p.desc} (${num(p.qtd)}×) ${brl((Number(p.qtd)||0)*(Number(p.unit)||0))}`));
+  if((r.pecas||[]).length) l.push('', '*Peças/serviços:*', ...r.pecas.map(p=>`• ${p.desc} (${num(p.qtd)}×) ${brlVis((Number(p.qtd)||0)*(Number(p.unit)||0))}`));
   if(r.servicoExecutado) l.push('', '*Executado:* '+r.servicoExecutado);
   return l.join('\n');
 }
@@ -705,9 +737,10 @@ async function imgData(src, maxPx=1100, fmt='image/jpeg'){
   }catch(e){ return null; }
 }
 const pdfTxt = (s)=> String(s??'').replace(/[—–]/g,'-').replace(/[•·]/g,'-').replace(/[“”]/g,'"').replace(/[‘’]/g,"'").replace(/[^\x00-\xFF\n]/g,'');
-function brlPDF(n){ return pdfTxt(brl(n)).replace(/\u00a0/g,' '); }
+function brlPDF(n){ return valoresLiberados() ? pdfTxt(brl(n)).replace(/\u00a0/g,' ') : 'R$ ****'; }
 
 async function montarPDF(m, r){
+  r=recVis(r);
   const jsPDF = await ensurePDF();
   const doc = new jsPDF({unit:'mm', format:'a4', compress:true});
   const W=210, H=297, M=12, CW=W-2*M;
@@ -903,7 +936,7 @@ function formMaquina(m){
 }
 
 /* ---------- menu / backup ---------- */
-function renderCloudBtn(){
+function renderCloudBtn(){ try{ renderValoresBtn(); }catch(_){ } 
   const btn=$('#btnCloud'); if(!btn) return;
   if(!window.Cloud || !Cloud.isEnabled()){ btn.hidden=true; return; }
   const st=Cloud.getStatus(), u=Cloud.getUser();
@@ -921,8 +954,10 @@ function formLogin(msg){
       <label class="f"><span>E-mail</span><input class="in" type="email" name="email" required autocomplete="username" placeholder="seu@email.com"></label>
       <label class="f"><span>Senha</span><input class="in" type="password" name="password" required autocomplete="current-password" placeholder="••••••"></label>
       <button class="btn pri" type="submit">🔓 Entrar e sincronizar</button>
+      <button class="btn ghost mt8" type="button" id="bForgot">Esqueci a senha</button>
     </form>`);
   const f=$('#fLogin',body);
+  $('#bForgot',body).onclick=()=>formEsqueci(f.email.value);
   f.onsubmit=async e=>{
     e.preventDefault();
     const btn=f.querySelector('button[type=submit]'); btn.disabled=true; btn.textContent='Entrando…';
@@ -951,6 +986,9 @@ function menu(){
   const cloudHtml = (window.Cloud && Cloud.isEnabled())
     ? (u ? `<div class="block"><small>Nuvem conectada</small><b>${esc(u.email||'')}</b></div>
             <button class="btn ghost" id="mSync">🔄 Sincronizar agora</button>
+            <button class="btn ghost" id="mAparelhos">📱 Aparelhos conectados</button>
+            ${window.Cloud && Cloud.isAdmin && Cloud.isAdmin()?`<button class="btn ghost" id="mAcessos">👥 Gerenciar acessos</button>
+            <button class="btn ghost" id="mPin">🔢 Alterar PIN</button>`:''}
             <button class="btn ghost" id="mSenha">🔑 Alterar senha</button>
             <button class="btn ghost" id="mLogout">🚪 Sair da conta</button>`
          : `<button class="btn pri" id="mLogin">🔒 Entrar na nuvem</button>`)
@@ -977,8 +1015,185 @@ function menu(){
   $('#mCred',body).onclick=creditos;
   if($('#mSync',body)) $('#mSync',body).onclick=async()=>{ fechar(); toast('Sincronizando…'); await Cloud.syncNow(); renderCloudBtn(); };
   if($('#mLogin',body)) $('#mLogin',body).onclick=()=>formLogin();
+  if($('#mAparelhos',body)) $('#mAparelhos',body).onclick=()=>formAparelhos();
+  if($('#mAcessos',body)) $('#mAcessos',body).onclick=()=>formAcessos();
+  if($('#mPin',body)) $('#mPin',body).onclick=()=>formAlterarPin();
   if($('#mSenha',body)) $('#mSenha',body).onclick=()=>formSenha();
   if($('#mLogout',body)) $('#mLogout',body).onclick=async()=>{ if(!confirm('Sair da conta na nuvem neste aparelho?')) return; await Cloud.logout(); fechar(); renderCloudBtn(); renderLoginScreen(); };
+}
+function dtBelem(iso){
+  if(!iso) return '—';
+  try{
+    return new Date(iso).toLocaleString('pt-BR',{ timeZone:'America/Belem', day:'2-digit', month:'2-digit', year:'numeric', hour:'2-digit', minute:'2-digit' }) + ' (Belém)';
+  }catch(_){ return String(iso); }
+}
+async function formAparelhos(){
+  const body=abrir('Aparelhos conectados', `<p class="note">Lista dos aparelhos que entraram na nuvem da frota. Remover da lista não encerra a sessão na hora — se alguém abrir o app de novo nesse aparelho, ele volta a aparecer.</p><div class="empty">Carregando…</div>`);
+  let rows=[];
+  try{ if(Cloud.heartbeat) await Cloud.heartbeat(true); rows=await Cloud.listDevices(); }catch(err){ body.querySelector('.empty').textContent='Não foi possível carregar: '+(err.message||err); return; }
+  const mine=Cloud.deviceId();
+  if(!rows.length){ body.querySelector('.empty').outerHTML='<div class="empty">Nenhum aparelho registrado ainda.</div>'; return; }
+  body.innerHTML = `<p class="note">Lista dos aparelhos que entraram na nuvem da frota. Remover da lista não encerra a sessão na hora — se alguém abrir o app de novo nesse aparelho, ele volta a aparecer.</p>
+    <div class="dev-list">${rows.map(d=>{
+      const nome=esc(d.apelido||d.nome||'Aparelho');
+      const este=d.device_id===mine;
+      return `<div class="dev-card ${este?'este':''}" data-id="${esc(d.device_id)}">
+        <div class="dev-top"><b>${nome}</b>${este?'<span class="pill ok">este aparelho</span>':''}</div>
+        <small>${esc(d.email||'—')}</small>
+        <small>Último acesso: ${esc(dtBelem(d.last_seen))}</small>
+        <small>Primeiro acesso: ${esc(dtBelem(d.first_seen))}</small>
+        <div class="btn-row mt8">
+          <button type="button" class="btn ghost" data-ren>✎ Renomear</button>
+          <button type="button" class="btn danger" data-rm>🗑️ Remover</button>
+        </div>
+      </div>`;
+    }).join('')}</div>`;
+  body.querySelectorAll('.dev-card').forEach(el=>{
+    const id=el.dataset.id;
+    el.querySelector('[data-ren]').onclick=async()=>{
+      const atual=rows.find(x=>x.device_id===id);
+      const v=prompt('Apelido deste aparelho:', (atual && (atual.apelido||atual.nome))||'');
+      if(v==null) return;
+      try{ await Cloud.renameDevice(id, v); toast('Apelido salvo ✔'); formAparelhos(); }catch(err){ toast('Erro: '+(err.message||err)); }
+    };
+    el.querySelector('[data-rm]').onclick=async()=>{
+      const este=id===mine;
+      if(!confirm(este?'Remover este aparelho da lista? Se você continuar usando o app aqui, ele pode aparecer de novo.':'Remover este aparelho da lista?')) return;
+      try{ await Cloud.removeDevice(id); toast('Removido da lista'); formAparelhos(); }catch(err){ toast('Erro: '+(err.message||err)); }
+    };
+  });
+}
+
+function renderValoresBtn(){
+  const btn=$('#btnValores'); if(!btn) return;
+  if(!(window.Cloud && Cloud.isEnabled() && Cloud.isAdmin && Cloud.isAdmin() && Cloud.getUser())){ btn.hidden=true; return; }
+  btn.hidden=false;
+  const on=valoresLiberados();
+  btn.className='cloud-btn '+(on?'ok':'');
+  btn.textContent = on ? '🔓 Ocultar valores' : '🔒 Mostrar valores';
+}
+function formDesbloquearValores(msg){
+  const body=abrir('Mostrar valores', `
+    <p class="note">Os valores ficam ocultos como <b>R$ ****</b>. Digite o PIN do administrador para ver. A liberação vale só nesta sessão, por cerca de 10 minutos, ou até fechar o app.</p>
+    ${msg?`<div class="err-box">${esc(msg)}</div>`:''}
+    <form id="fPin">
+      <label class="f"><span>PIN</span><input class="in" type="password" name="pin" inputmode="numeric" pattern="[0-9]{4,6}" maxlength="6" required autocomplete="off" placeholder="4 a 6 dígitos"></label>
+      <button class="btn pri" type="submit">🔓 Mostrar valores</button>
+    </form>`);
+  $('#fPin',body).onsubmit=async e=>{
+    e.preventDefault(); const f=e.target; const btn=f.querySelector('button[type=submit]'); btn.disabled=true;
+    try{
+      await Cloud.unlockValores(f.pin.value);
+      fechar(); toast('Valores liberados por 10 minutos'); renderValoresBtn(); await refresh();
+    }catch(err){ formDesbloquearValores(err.message||String(err)); }
+  };
+}
+function formAlterarPin(msg){
+  const body=abrir('Alterar PIN', `
+    <p class="note">O PIN libera os valores da frota. Só o administrador pode alterar. Use 4 a 6 dígitos.</p>
+    ${msg?`<div class="err-box">${esc(msg)}</div>`:''}
+    <form id="fAltPin">
+      <label class="f"><span>PIN atual</span><input class="in" type="password" name="atual" inputmode="numeric" maxlength="6" required autocomplete="off"></label>
+      <label class="f"><span>Novo PIN</span><input class="in" type="password" name="n1" inputmode="numeric" pattern="[0-9]{4,6}" maxlength="6" required autocomplete="off"></label>
+      <label class="f"><span>Repita o novo PIN</span><input class="in" type="password" name="n2" inputmode="numeric" maxlength="6" required autocomplete="off"></label>
+      <button class="btn pri" type="submit">💾 Salvar PIN</button>
+    </form>`);
+  $('#fAltPin',body).onsubmit=async e=>{
+    e.preventDefault(); const f=e.target;
+    if(!/^[0-9]{4,6}$/.test(f.n1.value)){ formAlterarPin('O novo PIN deve ter 4 a 6 dígitos.'); return; }
+    if(f.n1.value!==f.n2.value){ formAlterarPin('Os PIN não coincidem.'); return; }
+    const btn=f.querySelector('button[type=submit]'); btn.disabled=true;
+    try{ await Cloud.definirPin(f.atual.value, f.n1.value); fechar(); toast('PIN atualizado ✔'); }
+    catch(err){ formAlterarPin(err.message||String(err)); }
+  };
+}
+async function formAcessos(){
+  const body=abrir('Gerenciar acessos', `<p class="note">Libere ou bloqueie quem pode usar a nuvem da frota. Quem for bloqueado deixa de ver os dados na hora.</p><div class="empty">Carregando…</div>`);
+  let data; try{ data=await Cloud.adminAcesso('listar'); }catch(err){ body.querySelector('.empty').textContent=err.message||String(err); return; }
+  const membros=data.membros||[];
+  const me=(Cloud.getUser()&&Cloud.getUser().email||'').toLowerCase();
+  const nAdmins=membros.filter(m=>m.role==='admin'&&m.ativo).length;
+  body.innerHTML=`<p class="note">Libere ou bloqueie quem pode usar a nuvem da frota. Quem for bloqueado deixa de ver os dados na hora.</p>
+    <div class="dev-list">${membros.map(m=>{
+      const ativo=!!m.ativo;
+      const ultimo=m.last_seen?dtBelem(m.last_seen):'sem acesso ainda';
+      const lastAdmin=m.role==='admin'&&ativo&&nAdmins<=1;
+      return `<div class="dev-card ${ativo?'':'bloqueado'}">
+        <div class="dev-top"><b>${esc(m.nome||m.email)}</b><span class="pill ${ativo?'ok':'venc'}">${ativo?'Ativo':'Bloqueado'}</span></div>
+        <small>${esc(m.email)} · ${m.role==='admin'?'Administrador':'Membro'}</small>
+        <small>Último acesso: ${esc(ultimo)}</small>
+        ${lastAdmin?'<small>Não é possível bloquear o último administrador.</small>':
+          `<div class="btn-row mt8">${ativo
+            ? `<button type="button" class="btn danger" data-acao="bloquear" data-email="${esc(m.email)}">🚫 Bloquear</button>`
+            : `<button type="button" class="btn ghost" data-acao="desbloquear" data-email="${esc(m.email)}">✅ Desbloquear</button>`}</div>`}
+      </div>`;
+    }).join('')||'<div class="empty">Ninguém cadastrado.</div>'}</div>
+    <h3 class="sec">Liberar acesso</h3>
+    <form id="fLib">
+      <label class="f"><span>Nome</span><input class="in" name="nome" required placeholder="Nome da pessoa"></label>
+      <label class="f"><span>E-mail</span><input class="in" type="email" name="email" required placeholder="email@exemplo.com"></label>
+      <button class="btn pri" type="submit">✉️ Liberar acesso (envia e-mail para criar senha)</button>
+    </form>`;
+  body.querySelectorAll('[data-acao]').forEach(b=>b.onclick=async()=>{
+    const acao=b.dataset.acao, email=b.dataset.email;
+    if(!confirm((acao==='bloquear'?'Bloquear o acesso de ':'Desbloquear ')+email+'?')) return;
+    try{ await Cloud.adminAcesso(acao,{email}); toast(acao==='bloquear'?'Acesso bloqueado ✔':'Acesso liberado ✔'); formAcessos(); }
+    catch(err){ toast(err.message||String(err)); }
+  });
+  $('#fLib',body).onsubmit=async e=>{
+    e.preventDefault(); const f=e.target; const btn=f.querySelector('button[type=submit]'); btn.disabled=true; btn.textContent='Enviando…';
+    try{
+      const r=await Cloud.adminAcesso('liberar',{nome:f.nome.value, email:f.email.value});
+      toast(r.convite?'Convite enviado por e-mail ✔':'Acesso liberado ✔');
+      formAcessos();
+    }catch(err){ btn.disabled=false; btn.textContent='✉️ Liberar acesso (envia e-mail para criar senha)'; toast(err.message||String(err)); }
+  };
+}
+function formEsqueci(emailPre, msg){
+  const body=abrir('Recuperar senha', `
+    <p class="note">Enviamos um e-mail com um link para <b>criar uma nova senha</b>. Abra o link neste celular ou no computador — ele volta para o app.</p>
+    ${msg?`<div class="err-box">${esc(msg)}</div>`:''}
+    <form id="fRec">
+      <label class="f"><span>E-mail da conta</span><input class="in" type="email" name="email" required value="${esc(emailPre||'')}" placeholder="bruno_menegalli@hotmail.com"></label>
+      <button class="btn pri" type="submit">📧 Enviar link</button>
+    </form>`);
+  $('#fRec',body).onsubmit=async e=>{
+    e.preventDefault(); const f=e.target; const btn=f.querySelector('button[type=submit]'); btn.disabled=true; btn.textContent='Enviando…';
+    try{
+      await Cloud.requestRecovery(f.email.value);
+      body.innerHTML=`<div class="block pdf-ok"><b>E-mail enviado</b><br>Se a conta existir, a mensagem chega em alguns minutos. Olhe também a pasta de spam. O link vale por um tempo limitado.</div>
+        <button class="btn ghost" id="bBackLogin">Voltar ao login</button>`;
+      $('#bBackLogin',body).onclick=()=>formLogin();
+    }catch(err){ formEsqueci(f.email.value, 'Não foi possível enviar: '+(err.message||err)); }
+  };
+}
+function formNovaSenha(msg, recoveryError){
+  const body=abrir('Criar nova senha', `
+    <p class="note">Defina a senha que você vai usar no celular e no computador para abrir o Controle de Frota.</p>
+    ${recoveryError?`<div class="err-box">${esc(recoveryError)}</div>`:''}
+    ${msg?`<div class="err-box">${esc(msg)}</div>`:''}
+    ${Cloud.getUser()?`<form id="fNova">
+      <label class="f"><span>Nova senha</span><input class="in" type="password" name="p1" required minlength="8" autocomplete="new-password" placeholder="mínimo 8 caracteres"></label>
+      <label class="f"><span>Repita a nova senha</span><input class="in" type="password" name="p2" required minlength="8" autocomplete="new-password"></label>
+      <button class="btn pri" type="submit">💾 Salvar e entrar</button>
+    </form>`:`<p class="note">Este link é inválido ou já expirou. Peça um novo em <b>Esqueci a senha</b>.</p>
+      <button class="btn pri" id="bBackLogin2">Voltar ao login</button>`}
+  `);
+  const back=$('#bBackLogin2',body); if(back) back.onclick=()=>{ Cloud.finishRecovery(); formLogin(); };
+  const f=$('#fNova',body); if(!f) return;
+  f.onsubmit=async e=>{
+    e.preventDefault();
+    if(f.p1.value!==f.p2.value){ formNovaSenha('As senhas não coincidem.'); return; }
+    if(f.p1.value.length<8){ formNovaSenha('A senha deve ter pelo menos 8 caracteres.'); return; }
+    const btn=f.querySelector('button[type=submit]'); btn.disabled=true;
+    try{
+      await Cloud.changePassword(f.p1.value);
+      Cloud.finishRecovery();
+      fechar(); toast('Senha criada ✔ Sincronizando…');
+      renderCloudBtn(); renderTabs();
+      await Cloud.syncNow(); await refresh(); mostrarBanner(); notificar();
+    }catch(err){ formNovaSenha('Não foi possível salvar: '+(err.message||err)); }
+  };
 }
 function formSenha(msg){
   const body=abrir('Alterar senha da nuvem', `
@@ -1047,6 +1262,7 @@ function creditos(){
 /* ---------- init ---------- */
 $('#btnMenu').onclick=menu;
 $('#btnCloud').onclick=()=>{ if(!window.Cloud||!Cloud.isEnabled()) return; if(Cloud.getUser()) Cloud.syncNow(); else formLogin(); };
+$('#btnValores').onclick=()=>{ if(!(window.Cloud&&Cloud.isAdmin&&Cloud.isAdmin())) return; if(valoresLiberados()){ Cloud.lockValores(); toast('Valores ocultos'); } else formDesbloquearValores(); };
 (async()=>{
   try{ await seed(); await migrar(); await loadMaquinas(); await calcAlertas(); }catch(e){ $('#main').innerHTML=`<div class="wrap"><div class="empty">Não foi possível abrir o banco de dados do navegador.<br>${esc(e)}</div></div>`; return; }
   const saved=localStorage.getItem('frota.atual');
@@ -1055,10 +1271,14 @@ $('#btnCloud').onclick=()=>{ if(!window.Cloud||!Cloud.isEnabled()) return; if(Cl
     getAll, getOne, put, del,
     onStatus:()=>renderCloudBtn(),
     onSyncApplied:async()=>{ if(!Cloud.isEnabled()||Cloud.getUser()) await refresh(); },
-    onAuthChanged:async(sess)=>{ renderCloudBtn(); if(sess){ await Cloud.syncNow(); await refresh(); mostrarBanner(); } else if(Cloud.isEnabled()){ renderLoginScreen(); } }
+    onPasswordRecovery:()=>{ renderCloudBtn(); renderValoresBtn(); $('#tabs').innerHTML=''; renderLoginScreen(); formNovaSenha(); },
+    onValoresLocked:()=>{ renderValoresBtn(); refresh(); },
+    onAuthChanged:async(sess)=>{ renderCloudBtn(); renderValoresBtn(); if(Cloud.isRecovery()){ $('#tabs').innerHTML=''; renderLoginScreen(); formNovaSenha(); return; } if(sess){ await Cloud.syncNow(); await refresh(); mostrarBanner(); } else if(Cloud.isEnabled()){ renderLoginScreen(); } }
   }) : {enabled:false};
-  renderCloudBtn();
-  if(cloud.enabled && !cloud.session){
+  renderCloudBtn(); renderValoresBtn();
+  if(cloud.enabled && cloud.recovery){
+    $('#tabs').innerHTML=''; renderLoginScreen(); formNovaSenha(null, cloud.recoveryError);
+  }else if(cloud.enabled && !cloud.session){
     $('#tabs').innerHTML=''; renderLoginScreen(); formLogin();
   }else{
     renderTabs(); renderMain(); mostrarBanner();

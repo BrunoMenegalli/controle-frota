@@ -134,14 +134,66 @@ window.Cloud = (() => {
           changed = true;
         }
       }
+      if (Array.isArray(out.notasFiscais)) {
+        const arr = [];
+        for (let i = 0; i < out.notasFiscais.length; i++) {
+          const v = out.notasFiscais[i];
+          if (v && typeof v !== 'string') {
+            arr.push(await uploadBlob(v, `nf/${out.id}/nf-${i}-${stamp}.jpg`));
+            changed = true;
+          } else if (v) arr.push(v);
+        }
+        out.notasFiscais = arr;
+      }
     }
     return { rec: out, changed };
   }
 
-  async function enqueue(store, id, op, at) {
+  function extractFinance(rec) {
+    if (!rec) return null;
+    const pecas = Array.isArray(rec.pecas) ? rec.pecas : null;
+    const has = rec.custo != null || rec.maoObra != null || rec.totalPecas != null
+      || (Array.isArray(rec.notasFiscais) && rec.notasFiscais.length)
+      || (pecas && pecas.some((p) => p && (p.unit != null || p.valor != null || p.preco != null)));
+    if (!has) return null;
+    return { custo: rec.custo, maoObra: rec.maoObra, totalPecas: rec.totalPecas, pecas: rec.pecas, notasFiscais: rec.notasFiscais };
+  }
+  function stripFinanceObj(rec) {
+    if (!rec) return rec;
+    const o = { ...rec };
+    delete o.custo; delete o.maoObra; delete o.totalPecas; delete o.notasFiscais; delete o.notas;
+    if (Array.isArray(o.pecas)) {
+      o.pecas = o.pecas.map((p) => {
+        if (!p || typeof p !== 'object') return p;
+        const y = { ...p };
+        delete y.unit; delete y.valor; delete y.preco; delete y.total; delete y.custo;
+        return y;
+      });
+    }
+    return o;
+  }
+  async function enqueue(store, id, op, at, extra) {
     if (!isEnabled() || !api) return;
-    await api.put('pending', { key: `${store}:${id}`, store, id, op, at: at || Date.now() });
+    const row = { key: `${store}:${id}`, store, id, op, at: at || Date.now() };
+    const prev = await api.getOne('pending', row.key);
+    if (extra && extra.finance) row.finance = extra.finance;
+    else if (prev && prev.finance) row.finance = prev.finance;
+    await api.put('pending', row);
     scheduleSync(350);
+  }
+  async function stripLocalFinance() {
+    if (!api) return;
+    const revs = await api.getAll('revisoes');
+    for (const r of revs) {
+      const fin = extractFinance(r);
+      if (!fin) continue;
+      const key = `revisoes:${r.id}`;
+      const pending = await api.getOne('pending', key);
+      const row = pending || { key, store: 'revisoes', id: r.id, op: 'put', at: r.atualizadoEm || r.criadoEm || Date.now() };
+      if (isAdmin()) row.finance = fin;
+      await api.put('pending', row);
+      await api.put('revisoes', stripFinanceObj(r));
+    }
   }
 
   function scheduleSync(ms = 800) {
@@ -200,6 +252,7 @@ window.Cloud = (() => {
       setStatus('syncing', 'Sincronizando…');
       try {
         await prepareFirstMigration();
+        await stripLocalFinance();
 
         // 1. Push local pending ops
         const pend = (await api.getAll('pending')).sort((a, b) => (a.at || 0) - (b.at || 0));
@@ -221,9 +274,20 @@ window.Cloud = (() => {
           } else {
             const cur = await api.getOne(op.store, op.id);
             if (!cur) { await api.del('pending', op.key); continue; }
-            const { rec, changed } = await uploadRecordMedia(op.store, cur);
+            let merged = cur;
+            if (op.store === 'revisoes' && op.finance && isAdmin()) {
+              merged = {
+                ...cur,
+                custo: op.finance.custo,
+                maoObra: op.finance.maoObra,
+                totalPecas: op.finance.totalPecas,
+                pecas: op.finance.pecas || cur.pecas,
+                notasFiscais: op.finance.notasFiscais || cur.notasFiscais,
+              };
+            }
+            const { rec, changed } = await uploadRecordMedia(op.store, merged);
             rec.atualizadoEm = rec.atualizadoEm || op.at || Date.now();
-            if (changed) await api.put(op.store, rec);
+            if (changed) await api.put(op.store, op.store === 'revisoes' ? stripFinanceObj(rec) : rec);
             const row = op.store === 'maquinas'
               ? { id: rec.id, dados: rec, updated_at: rec.atualizadoEm, deleted_at: null }
               : { id: rec.id, maquina_id: rec.maquinaId || '', dados: rec, updated_at: rec.atualizadoEm, deleted_at: null };
@@ -278,6 +342,8 @@ window.Cloud = (() => {
         await api.put('meta', { k: 'lastSyncAt', v: maxTs || Date.now() });
         status.lastAt = Date.now();
         setStatus('ok', 'Sincronizado');
+        heartbeat();
+        if (valoresLiberados()) { try { await loadFinance(); } catch (_) {} }
         if (changedAny) await api.onSyncApplied?.();
       } catch (err) {
         console.warn('Cloud sync error:', err);
@@ -304,41 +370,273 @@ window.Cloud = (() => {
     }
   }
 
+  const APP_URL = 'https://brunomenegalli.github.io/controle-frota/';
+  let recovering = false;
+
+  function authUrlParams() {
+    const hash = new URLSearchParams((location.hash || '').replace(/^#/, ''));
+    const query = new URLSearchParams(location.search || '');
+    const get = (k) => hash.get(k) || query.get(k) || '';
+    return {
+      type: get('type'),
+      access_token: get('access_token'),
+      refresh_token: get('refresh_token'),
+      token_hash: get('token_hash'),
+      code: query.get('code') || '',
+      error: get('error'),
+      error_description: get('error_description') || get('error_code'),
+    };
+  }
+  function looksLikeRecovery(p) {
+    if (!p) p = authUrlParams();
+    return p.type === 'recovery' || p.type === 'passwordrecovery' || !!(p.token_hash && p.type === 'recovery');
+  }
+  function cleanAuthUrl() {
+    try {
+      const u = new URL(location.href);
+      ['code','token_hash','type','error','error_description','error_code'].forEach((k) => u.searchParams.delete(k));
+      const dropHash = /access_token=|refresh_token=|type=recovery|type=passwordrecovery/.test(location.hash || '');
+      history.replaceState({}, document.title, u.pathname + u.search + (dropHash ? '' : (u.hash || '')));
+    } catch (_) {}
+  }
+  function decodeParam(v) {
+    try { return decodeURIComponent(String(v || '').replace(/\+/g, ' ')); }
+    catch (_) { return String(v || '').replace(/\+/g, ' '); }
+  }
+  async function consumeAuthRedirect(p) {
+    if (!p) p = authUrlParams();
+    if (p.error) {
+      const msg = decodeParam(p.error_description || p.error);
+      return { recovery: looksLikeRecovery(p) || /recover|otp/i.test(p.error + ' ' + (p.error_description || '')), error: msg, session: null };
+    }
+    if (p.token_hash && (p.type === 'recovery' || p.type === 'email' || p.type === 'magiclink')) {
+      const typ = p.type === 'recovery' ? 'recovery' : 'email';
+      const { data, error } = await sb.auth.verifyOtp({ token_hash: p.token_hash, type: typ });
+      if (error) return { recovery: typ === 'recovery', error: error.message, session: null };
+      session = data.session;
+      recovering = typ === 'recovery';
+      cleanAuthUrl();
+      return { recovery: recovering, session, error: null };
+    }
+    if (p.access_token && p.refresh_token) {
+      const { data, error } = await sb.auth.setSession({ access_token: p.access_token, refresh_token: p.refresh_token });
+      if (error) return { recovery: looksLikeRecovery(p), error: error.message, session: null };
+      session = data.session;
+      recovering = looksLikeRecovery(p);
+      cleanAuthUrl();
+      return { recovery: recovering, session, error: null };
+    }
+    return { recovery: looksLikeRecovery(p), session: null, error: null };
+  }
+
+  function deviceId() {
+    let id = localStorage.getItem('frota.deviceId');
+    if (!id) {
+      id = (crypto.randomUUID && crypto.randomUUID()) || (Date.now().toString(16) + Math.random().toString(16).slice(2));
+      localStorage.setItem('frota.deviceId', id);
+    }
+    return id;
+  }
+  function defaultDeviceName() {
+    const ua = navigator.userAgent || '';
+    const isAndroid = /Android/i.test(ua);
+    const isIOS = /iPhone|iPad|iPod/i.test(ua);
+    const isWin = /Windows/i.test(ua);
+    const isMac = /Mac OS X|Macintosh/i.test(ua) && !isIOS;
+    const isMobile = isAndroid || /iPhone|Mobile/i.test(ua);
+    const device = isAndroid ? 'Android celular' : /iPad/i.test(ua) ? 'iPad' : /iPhone/i.test(ua) ? 'iPhone' : isWin ? 'Windows PC' : isMac ? 'Mac' : isMobile ? 'Celular' : 'Computador';
+    const browser = /Edg\//.test(ua) ? 'Edge' : (/Chrome\//.test(ua) && !/Edg\//.test(ua)) ? 'Chrome' : /Firefox\//.test(ua) ? 'Firefox' : /Safari/i.test(ua) ? 'Safari' : 'navegador';
+    return device + ' · ' + browser;
+  }
+  async function heartbeat(force) {
+    if (!sb || !session || !navigator.onLine) return;
+    const now = Date.now();
+    const last = Number(sessionStorage.getItem('frota.deviceBeat') || 0);
+    if (!force && last && now - last < 5 * 60 * 1000) return;
+    const id = deviceId();
+    const email = (session.user && session.user.email) || '';
+    const nome = defaultDeviceName();
+    try {
+      const { data: cur } = await sb.from('frota_dispositivos').select('apelido,nome,first_seen').eq('device_id', id).maybeSingle();
+      const row = {
+        device_id: id,
+        email,
+        nome: (cur && cur.nome) || nome,
+        apelido: cur ? cur.apelido : null,
+        user_agent: (navigator.userAgent || '').slice(0, 400),
+        first_seen: (cur && cur.first_seen) || new Date().toISOString(),
+        last_seen: new Date().toISOString(),
+      };
+      const { error } = await sb.from('frota_dispositivos').upsert(row);
+      if (!error) sessionStorage.setItem('frota.deviceBeat', String(now));
+    } catch (_) {}
+  }
+  async function listDevices() {
+    if (!sb || !session) return [];
+    const { data, error } = await sb.from('frota_dispositivos').select('*').order('last_seen', { ascending: false });
+    if (error) throw error;
+    return data || [];
+  }
+  async function renameDevice(id, apelido) {
+    const { error } = await sb.from('frota_dispositivos').update({ apelido: (apelido || '').trim() || null }).eq('device_id', id);
+    if (error) throw error;
+  }
+  async function removeDevice(id) {
+    const { error } = await sb.from('frota_dispositivos').delete().eq('device_id', id);
+    if (error) throw error;
+    if (id === deviceId()) sessionStorage.removeItem('frota.deviceBeat');
+  }
+
   async function init(hostApi) {
     api = hostApi;
     if (!isEnabled()) {
       setStatus('off', '');
       return { enabled: false, session: null };
     }
+    const urlAuth = authUrlParams();
     sb = window.supabase.createClient(cfg().url, cfg().anonKey, {
-      auth: { persistSession: true, autoRefreshToken: true, detectSessionInUrl: false },
+      auth: { persistSession: true, autoRefreshToken: true, detectSessionInUrl: !urlAuth.error },
     });
-    const { data } = await sb.auth.getSession();
-    session = data?.session || null;
-    sb.auth.onAuthStateChange((_ev, s) => {
+    sb.auth.onAuthStateChange((ev, s) => {
+      if (ev === 'PASSWORD_RECOVERY') {
+        recovering = true;
+        session = s || session;
+        cleanAuthUrl();
+        api.onPasswordRecovery?.(session);
+        return;
+      }
       const prev = !!session;
       session = s || null;
       if (session) {
         startRealtime();
-        scheduleSync(100);
+        if (!recovering) { heartbeat(); scheduleSync(100); }
       } else {
         stopRealtime();
+        if (ev !== 'INITIAL_SESSION') recovering = false;
+        profile = null;
+        lockValores();
         setStatus('auth', 'Entrar');
       }
-      if (prev !== !!session) api.onAuthChanged?.(session);
+      Promise.resolve().then(async () => {
+        if (session && !recovering) await loadProfile();
+        if (!recovering && prev !== !!session) api.onAuthChanged?.(session);
+        else if (!recovering) { try { api.onStatus?.(); } catch (_) {} }
+      });
     });
-    window.addEventListener('online', () => scheduleSync(300));
+    const consumed = await consumeAuthRedirect(urlAuth);
+    if (consumed.recovery) recovering = true;
+    if (consumed.session) session = consumed.session;
+    if (!session) {
+      const { data } = await sb.auth.getSession();
+      session = data?.session || null;
+    }
+    window.addEventListener('online', () => { if (!recovering) { heartbeat(); scheduleSync(300); } });
     window.addEventListener('offline', () => setStatus('offline', 'Offline'));
     document.addEventListener('visibilitychange', () => {
-      if (document.visibilityState === 'visible' && session) scheduleSync(300);
+      if (document.visibilityState === 'visible' && session && !recovering) { heartbeat(); scheduleSync(300); }
     });
+    window.addEventListener('pagehide', () => lockValores());
+    if (recovering) {
+      setStatus('auth', 'Nova senha');
+      return { enabled: true, session, recovery: true, recoveryError: consumed.error || null };
+    }
     if (session) {
+      await loadProfile();
       startRealtime();
       setStatus(navigator.onLine ? 'syncing' : 'offline', navigator.onLine ? 'Sincronizando…' : 'Offline');
+      heartbeat(true);
     } else {
       setStatus('auth', 'Entrar');
     }
-    return { enabled: true, session };
+    return { enabled: true, session, recovery: false, recoveryError: consumed.error || null };
+  }
+
+  let profile = null; // {email,nome,role,ativo}
+  let unlockToken = null, unlockTimer = null, unlockExp = 0;
+  const financeMap = new Map();
+
+  async function loadProfile() {
+    profile = null;
+    if (!sb || !session || !session.user) return;
+    const em = session.user.email || '';
+    const { data } = await sb.from('frota_membros').select('email,nome,role,ativo').ilike('email', em).maybeSingle();
+    profile = data || null;
+  }
+  function isAdmin() { return !!(profile && profile.role === 'admin' && profile.ativo); }
+  function valoresLiberados() { return isAdmin() && !!unlockToken && Date.now() < unlockExp; }
+
+  function lockValores() {
+    unlockToken = null; unlockExp = 0; financeMap.clear();
+    if (unlockTimer) { clearTimeout(unlockTimer); unlockTimer = null; }
+    api && api.onValoresLocked && api.onValoresLocked();
+  }
+  async function pinStatus() {
+    const { data, error } = await sb.rpc('frota_pin_status');
+    if (error) throw error;
+    return data || { is_admin: false, has_pin: false };
+  }
+  async function definirPin(atual, novo) {
+    const { data, error } = await sb.rpc('frota_pin_definir', { pin_atual: atual || null, pin_novo: novo });
+    if (error) throw error;
+    if (!data || !data.ok) {
+      const e = (data && data.error) || 'erro';
+      const map = { not_admin: 'Só o administrador pode alterar o PIN.', pin_invalido: 'O PIN deve ter 4 a 6 dígitos.', pin_atual_incorreto: 'PIN atual incorreto.' };
+      throw new Error(map[e] || e);
+    }
+    return data;
+  }
+  async function unlockValores(pin) {
+    if (!isAdmin()) throw new Error('Apenas o administrador pode liberar os valores.');
+    const { data, error } = await sb.rpc('frota_desbloquear_valores', { pin: String(pin || '') });
+    if (error) throw error;
+    if (!data || !data.ok) {
+      const e = (data && data.error) || 'erro';
+      if (e === 'locked') throw new Error('Muitas tentativas. Tente de novo em 5 minutos.');
+      if (e === 'pin_incorreto') throw new Error('PIN incorreto. Restam ' + (data.restantes != null ? data.restantes : '?') + ' tentativas.');
+      if (e === 'sem_pin') throw new Error('Nenhum PIN cadastrado. Use Alterar PIN.');
+      if (e === 'not_admin') throw new Error('Apenas o administrador pode liberar os valores.');
+      throw new Error(e);
+    }
+    unlockToken = data.token;
+    const sec = Number(data.expires_in) || 600;
+    unlockExp = Date.now() + sec * 1000;
+    if (unlockTimer) clearTimeout(unlockTimer);
+    unlockTimer = setTimeout(() => lockValores(), sec * 1000);
+    await loadFinance();
+    return true;
+  }
+  async function loadFinance() {
+    financeMap.clear();
+    if (!unlockToken || !isAdmin()) return;
+    const { data, error } = await sb.rpc('frota_financeiro_lido', { unlock_token: unlockToken });
+    if (error) { lockValores(); throw error; }
+    for (const row of data || []) financeMap.set(row.revisao_id, row);
+  }
+  function comValores(rec) {
+    if (!rec) return rec;
+    if (!valoresLiberados()) {
+      const o = { ...rec, custo: null, maoObra: null, totalPecas: null, notasFiscais: null };
+      if (Array.isArray(o.pecas)) o.pecas = o.pecas.map((p) => (p && typeof p === 'object' ? { ...p, unit: null } : p));
+      return o;
+    }
+    const f = financeMap.get(rec.id);
+    if (!f) return rec;
+    return {
+      ...rec,
+      custo: f.custo != null ? Number(f.custo) : rec.custo,
+      maoObra: f.mao_obra != null ? Number(f.mao_obra) : rec.maoObra,
+      totalPecas: f.total_pecas != null ? Number(f.total_pecas) : rec.totalPecas,
+      pecas: f.pecas || rec.pecas,
+      notasFiscais: f.notas || rec.notasFiscais,
+    };
+  }
+  async function adminAcesso(acao, payload) {
+    const { data, error } = await sb.functions.invoke('gerenciar-acesso', { body: { acao, ...(payload || {}) } });
+    const body = (data && typeof data === 'object') ? data : null;
+    const map = { not_admin: 'Apenas o administrador pode gerenciar acessos.', ultimo_admin: 'Não é possível bloquear o último administrador.', email_invalido: 'E-mail inválido.', nao_encontrado: 'Pessoa não encontrada.' };
+    if (body && body.ok === false) throw new Error(map[body.error] || body.error || 'Erro');
+    if (error) throw new Error((body && (map[body.error] || body.error)) || error.message || 'Falha na função de acesso');
+    return body;
   }
 
   async function login(email, password) {
@@ -346,15 +644,29 @@ window.Cloud = (() => {
     const { data, error } = await sb.auth.signInWithPassword({ email: email.trim(), password });
     if (error) throw error;
     session = data.session;
+    recovering = false;
+    await loadProfile();
     startRealtime();
+    heartbeat(true);
     await syncNow();
     return session;
+  }
+  async function requestRecovery(email) {
+    if (!sb) throw new Error('Nuvem não configurada');
+    const { error } = await sb.auth.resetPasswordForEmail(String(email || '').trim(), { redirectTo: APP_URL });
+    if (error) throw error;
+  }
+  function finishRecovery() {
+    recovering = false;
+    cleanAuthUrl();
   }
 
   async function logout() {
     stopRealtime();
     if (sb) await sb.auth.signOut();
     session = null;
+    profile = null;
+    lockValores();
     setStatus('auth', 'Entrar');
   }
   async function changePassword(newPassword) {
@@ -378,6 +690,9 @@ window.Cloud = (() => {
     login,
     logout,
     changePassword,
+    requestRecovery,
+    finishRecovery,
+    isRecovery: () => recovering,
     getUser: () => session?.user || null,
     getStatus: () => status,
     syncNow,
@@ -386,5 +701,22 @@ window.Cloud = (() => {
     mediaUrl,
     ensureMediaBlob,
     nextOsNumero,
+    deviceId,
+    defaultDeviceName,
+    heartbeat,
+    listDevices,
+    renameDevice,
+    removeDevice,
+    appUrl: APP_URL,
+    isAdmin,
+    getProfile: () => profile,
+    valoresLiberados,
+    pinStatus,
+    definirPin,
+    unlockValores,
+    lockValores,
+    loadFinance,
+    comValores,
+    adminAcesso,
   };
 })();

@@ -165,3 +165,12 @@ canvas.sig{display:block;width:100%;height:170px;background:#fff linear-gradient
 .login-card{background:var(--card);border-radius:var(--r);padding:18px;box-shadow:0 2px 8px rgba(0,0,0,.08);max-width:420px;margin:24px auto}
 .login-card h2{margin:0 0 6px;font-size:21px}
 .err-box{background:#fee2e2;color:#b91c1c;border-radius:10px;padding:10px 12px;margin-bottom:12px;font-size:14px;font-weight:600}
+
+.dev-list{display:flex;flex-direction:column;gap:10px;margin-top:8px}
+.dev-card{background:var(--card);border-radius:var(--r);padding:12px 14px;box-shadow:0 1px 2px rgba(0,0,0,.06)}
+.dev-card.este{border-left:5px solid var(--pri)}
+.dev-top{display:flex;align-items:center;justify-content:space-between;gap:8px;margin-bottom:4px}
+.dev-card small{display:block;color:var(--mut);font-size:13px;margin-top:2px}
+
+.nf-lock{background:#f3f4f6;border:1px dashed #9ca3af;border-radius:12px;padding:18px 12px;text-align:center;color:#6b7280;font-weight:700;margin-bottom:12px}
+.dev-card.bloqueado{opacity:.85;border-left:5px solid #9ca3af}
