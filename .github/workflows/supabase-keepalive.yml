@@ -1,0 +1,24 @@
+# Ping semanal para o projeto gratuito do Supabase não pausar após 7 dias sem uso.
+# A chave aqui é a anon/publishable (pública por desenho), nunca a service_role.
+name: Supabase keep-alive
+on:
+  schedule:
+    - cron: '0 11 * * 1'
+  workflow_dispatch:
+jobs:
+  ping:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Ping Auth + REST
+        run: |
+          set -e
+          URL="https://qpusgufqswkdlscmwsyl.supabase.co"
+          KEY="eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6InFwdXNndWZxc3drZGxzY213c3lsIiwicm9sZSI6ImFub24iLCJpYXQiOjE3OTU1NzYyNjcsImV4cCI6MjExMTE1MjI2N30.1bSBCj6m7w98FHXWfc9MOnJQDKe_hqI3xdue8hoyAXc"
+          code=$(curl -sS -o /tmp/ka-auth.txt -w "%{http_code}" "$URL/auth/v1/health")
+          echo "auth/health $code"
+          test "$code" = "200"
+          code=$(curl -sS -o /tmp/ka-rest.txt -w "%{http_code}" \
+            -H "apikey: $KEY" -H "Authorization: Bearer $KEY" \
+            "$URL/rest/v1/frota_membros?select=email&limit=1")
+          echo "rest/frota_membros $code"
+          test "$code" = "200"

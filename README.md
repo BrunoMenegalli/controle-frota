@@ -12,3 +12,10 @@ App web (PWA) para registrar revisões e manutenção da frota pelo celular: fot
 Fotos das máquinas: Wikimedia Commons — créditos e licenças em *Menu → Sobre e créditos das fotos* e em `CREDITOS.md`.
 
 Ícone: monograma BM (fonte Outfit, SIL OFL, convertida em curvas) — fonte em `icons/src/`.
+
+
+## Sincronização na nuvem (v2.1)
+
+Com login (e-mail e senha), o celular e o computador passam a mostrar os mesmos equipamentos, OS, fotos, assinaturas e vencimentos. Os dados continuam em cache no aparelho (IndexedDB) e funcionam offline; ao reconectar, a fila é enviada.
+
+Backend: projeto gratuito **Supabase** (`bm-sistemas`, região São Paulo). O script `supabase-setup.sql` documenta tabelas, RLS e o bucket privado `frota-media`. Um workflow (`supabase-keepalive.yml`) pinga a API toda segunda-feira para o projeto gratuito não pausar após 7 dias parado.
